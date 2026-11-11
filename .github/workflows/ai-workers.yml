@@ -39,7 +39,7 @@ jobs:
       - name: 安装云端桌面与 Chrome
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb fluxbox scrot xdotool wmctrl xclip x11-apps mousepad pcmanfm python3-tk imagemagick
+          sudo apt-get install -y xvfb fluxbox scrot xdotool wmctrl xclip x11-apps mousepad pcmanfm galculator python3-tk imagemagick tesseract-ocr tesseract-ocr-chi-sim
           sudo rm -f /usr/share/keyrings/google-chrome.gpg
           wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
           echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
@@ -93,6 +93,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r worker/requirements.txt
           python -m playwright install chromium
+
+      - name: 安装 Tesseract OCR
+        run: |
+          choco install tesseract -y
+          echo "C:\Program Files\Tesseract-OCR" >> $env:GITHUB_PATH
 
       - name: 写入隧道密钥
         shell: pwsh
