@@ -240,7 +240,43 @@ class DesktopOps:
             self._clip = pyperclip
         return self._clip
 
+    def _hide_agent_windows(self):
+        if self.os_name != "windows":
+            return
+        try:
+            import pygetwindow as gw
+            for w in gw.getAllWindows():
+                try:
+                    t = (w.title or "").lower()
+                    if any(x in t for x in ("hosted-compute-agent", "hostedcomputeagent", "github")):
+                        w.minimize()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def _shot(self):
+        if self.os_name != "windows":
+            self._load()  # 创建 XAUTHORITY，保证 scrot/X11 可用
+            path = os.path.join(tempfile.gettempdir(), "desk_%s.png" % uuid.uuid4().hex[:8])
+            try:
+                env = dict(os.environ)
+                env.setdefault("DISPLAY", ":99")
+                subprocess.run(["scrot", "-o", path], check=True, timeout=15, env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                data = open(path, "rb").read()
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+                w = h = 0
+                if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+                    w = int.from_bytes(data[16:20], "big")
+                    h = int.from_bytes(data[20:24], "big")
+                return base64.b64encode(data).decode("ascii"), (w or 1920, h or 1080)
+            except Exception:
+                pass
+        self._hide_agent_windows()
         pg = self._load()
         from io import BytesIO
         img = pg.screenshot()
@@ -249,10 +285,11 @@ class DesktopOps:
         return base64.b64encode(buf.getvalue()).decode("ascii"), img.size
 
     def _windows(self):
+        bad = ("hosted-compute-agent", "hostedcomputeagent", "github", "system properties", "program manager")
         if self.os_name == "windows":
             try:
                 import pygetwindow as gw
-                return [w.title for w in gw.getAllWindows() if w.title]
+                return [w.title for w in gw.getAllWindows() if w.title and not any(b in (w.title or "").lower() for b in bad)]
             except Exception:
                 return []
         try:
@@ -262,7 +299,7 @@ class DesktopOps:
                 parts = line.split(None, 3)
                 if len(parts) >= 4:
                     titles.append(parts[3])
-            return titles
+            return [t for t in titles if not any(b in t.lower() for b in bad)]
         except Exception:
             return []
 
