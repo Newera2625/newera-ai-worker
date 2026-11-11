@@ -366,7 +366,7 @@ class DesktopOps:
         low = (title or "").lower()
         return (app in low
                 or (app in ("notepad", "text") and ("notepad" in low or "mousepad" in low or "gedit" in low or "text editor" in low))
-                or (app in ("calculator", "calc") and "calc" in low)
+                or (app in ("calculator", "calc") and ("calc" in low or "galculator" in low))
                 or (app in ("files", "explorer") and ("file" in low or "explorer" in low or "pcmanfm" in low or "nautilus" in low))
                 or (app == "writer" and ("writer" in low or "word" in low))
                 or (app == "paint" and "paint" in low)
@@ -413,12 +413,71 @@ class DesktopOps:
             except Exception:
                 pass
 
+    def _ocr_elements(self, b64):
+        if not b64:
+            return []
+        tesseract = shutil.which("tesseract")
+        if not tesseract and os.name == "nt":
+            for p in (r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                      r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"):
+                if os.path.exists(p):
+                    tesseract = p
+                    break
+        if not tesseract:
+            return []
+        path = os.path.join(tempfile.gettempdir(), "ocr_%s.png" % uuid.uuid4().hex[:8])
+        try:
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(b64))
+            out = subprocess.run([tesseract, path, "stdout", "--psm", "11", "tsv"],
+                                 capture_output=True, text=True, timeout=25).stdout
+            els = []
+            for line in out.splitlines()[1:]:
+                parts = line.split("\t")
+                if len(parts) < 12:
+                    continue
+                try:
+                    conf = float(parts[10])
+                    left = int(float(parts[6]))
+                    top = int(float(parts[7]))
+                    w = int(float(parts[8]))
+                    h = int(float(parts[9]))
+                except Exception:
+                    continue
+                text = (parts[11] or "").strip()
+                if conf < 35 or not text or len(text) > 40:
+                    continue
+                els.append({"text": text, "x": left, "y": top, "w": w, "h": h,
+                            "cx": left + w // 2, "cy": top + h // 2, "conf": int(conf)})
+            seen = set()
+            outels = []
+            for e in sorted(els, key=lambda e: (e["y"], e["x"])):
+                key = (e["text"], e["cx"] // 10, e["cy"] // 10)
+                if key in seen:
+                    continue
+                seen.add(key)
+                outels.append(e)
+            return outels[:40]
+        except Exception:
+            return []
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
     def _result(self, action, sid, shot, extra=None, win=None):
         out = {"ok": True, "action": action, "session_id": sid,
                "screenshot_b64": shot[0], "screen": [shot[1][0], shot[1][1]],
                "windows": self._windows()[:20], "sessions": self.count()}
         if win:
             out["window_title"] = win.get("title", "")
+        try:
+            elements = self._ocr_elements(shot[0])
+            if elements:
+                out["elements"] = elements
+        except Exception:
+            pass
         if extra:
             out.update(extra)
         return out
@@ -435,7 +494,7 @@ class DesktopOps:
             }
         else:
             mapping = {
-                "calculator": ["xcalc"], "calc": ["xcalc"],
+                "calculator": ["galculator"], "calc": ["galculator"],
                 "notepad": ["mousepad"], "text": ["mousepad"],
                 "files": ["pcmanfm"], "explorer": ["pcmanfm"],
                 "writer": ["libreoffice", "--writer"],
