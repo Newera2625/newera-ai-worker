@@ -1,0 +1,96 @@
+name: AI Browser Workers
+
+# 新启年 AI 工具机群：5 台 Linux + 5 台 Windows
+# 由网站管理员面板触发；每台机器通过 SSH -R 把 127.0.0.1:8080
+# 反向映射到香港 VPS 的 25xxx/26xxx 端口，主站再经 SSH -L 调度。
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "运行时长（分钟，建议 330，最大 350）"
+        required: false
+        default: "330"
+
+concurrency:
+  group: ai-workers
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装 Playwright 与 Chromium
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r worker/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: 写入隧道密钥
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.TUNNEL_SSH_KEY }}" > ~/.ssh/ai_worker_tunnel
+          chmod 600 ~/.ssh/ai_worker_tunnel
+
+      - name: 运行工具机 Linux #${{ matrix.slot }}
+        env:
+          AI_WORKER_TOKEN: ${{ secrets.AI_WORKER_TOKEN }}
+        run: |
+          python worker/agent.py \
+            --os linux \
+            --slot ${{ matrix.slot }} \
+            --duration-min ${{ github.event.inputs.duration || '330' }} \
+            --key ~/.ssh/ai_worker_tunnel \
+            --tunnel-host "${{ secrets.TUNNEL_HOST }}" \
+            --tunnel-port "${{ secrets.TUNNEL_PORT }}"
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装 Playwright 与 Chromium
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r worker/requirements.txt
+          python -m playwright install chromium
+
+      - name: 写入隧道密钥
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:USERPROFILE ".ssh"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $path = Join-Path $dir "ai_worker_tunnel"
+          $key = "${{ secrets.TUNNEL_SSH_KEY }}"
+          [IO.File]::WriteAllText($path, $key + "`n")
+          icacls $path /inheritance:r /grant:r "$($env:USERNAME):(R)"
+
+      - name: 运行工具机 Windows #${{ matrix.slot }}
+        shell: pwsh
+        env:
+          AI_WORKER_TOKEN: ${{ secrets.AI_WORKER_TOKEN }}
+          TUNNEL_HOST: ${{ secrets.TUNNEL_HOST }}
+          TUNNEL_PORT: ${{ secrets.TUNNEL_PORT }}
+        run: |
+          $dur = "${{ github.event.inputs.duration }}"
+          if (-not $dur) { $dur = "330" }
+          python worker/agent.py --os windows --slot ${{ matrix.slot }} --duration-min $dur --key "$env:USERPROFILE\.ssh\ai_worker_tunnel" --tunnel-host $env:TUNNEL_HOST --tunnel-port $env:TUNNEL_PORT
