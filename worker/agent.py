@@ -221,6 +221,14 @@ class DesktopOps:
 
     def _load(self):
         if self._pg is None:
+            if self.os_name != "windows":
+                auth = os.path.expanduser("~/.Xauthority")
+                try:
+                    if not os.path.exists(auth):
+                        open(auth, "a").close()
+                    os.environ.setdefault("XAUTHORITY", auth)
+                except Exception:
+                    pass
             import pyautogui
             pyautogui.FAILSAFE = False
             self._pg = pyautogui
