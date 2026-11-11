@@ -426,10 +426,23 @@ class DesktopOps:
         if not tesseract:
             return []
         path = os.path.join(tempfile.gettempdir(), "ocr_%s.png" % uuid.uuid4().hex[:8])
+        scale = 1
         try:
-            with open(path, "wb") as f:
-                f.write(base64.b64decode(b64))
-            out = subprocess.run([tesseract, path, "stdout", "--psm", "11", "tsv"],
+            raw = base64.b64decode(b64)
+            try:
+                from PIL import Image
+                import io
+                img = Image.open(io.BytesIO(raw))
+                scale = 3
+                img = img.resize((max(1, img.width * scale), max(1, img.height * scale)), Image.LANCZOS)
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("L")
+                img.save(path, format="PNG")
+            except Exception:
+                with open(path, "wb") as f:
+                    f.write(raw)
+                scale = 1
+            out = subprocess.run([tesseract, path, "stdout", "--psm", "6", "tsv"],
                                  capture_output=True, text=True, timeout=25).stdout
             els = []
             for line in out.splitlines()[1:]:
@@ -438,14 +451,14 @@ class DesktopOps:
                     continue
                 try:
                     conf = float(parts[10])
-                    left = int(float(parts[6]))
-                    top = int(float(parts[7]))
-                    w = int(float(parts[8]))
-                    h = int(float(parts[9]))
+                    left = int(float(parts[6])) // scale
+                    top = int(float(parts[7])) // scale
+                    w = max(1, int(float(parts[8])) // scale)
+                    h = max(1, int(float(parts[9])) // scale)
                 except Exception:
                     continue
                 text = (parts[11] or "").strip()
-                if conf < 35 or not text or len(text) > 40:
+                if conf < 25 or not text or len(text) > 40:
                     continue
                 els.append({"text": text, "x": left, "y": top, "w": w, "h": h,
                             "cx": left + w // 2, "cy": top + h // 2, "conf": int(conf)})
