@@ -36,6 +36,24 @@ jobs:
           pip install -r worker/requirements.txt
           python -m playwright install --with-deps chromium
 
+      - name: 安装云端桌面与 Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb fluxbox scrot xdotool wmctrl xclip x11-apps mousepad pcmanfm python3-tk
+          sudo rm -f /usr/share/keyrings/google-chrome.gpg
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: 启动虚拟显示器
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 > /tmp/xvfb.log 2>&1 &
+          sleep 2
+          DISPLAY=:99 fluxbox > /tmp/fluxbox.log 2>&1 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+          echo "BROWSER_HEADLESS=0" >> $GITHUB_ENV
+
       - name: 写入隧道密钥
         run: |
           mkdir -p ~/.ssh
@@ -74,6 +92,9 @@ jobs:
           pip install -r worker/requirements.txt
           python -m playwright install chromium
 
+      - name: 安装 Chrome
+        run: choco install googlechrome -y
+
       - name: 写入隧道密钥
         shell: pwsh
         run: |
@@ -90,6 +111,7 @@ jobs:
           AI_WORKER_TOKEN: ${{ secrets.AI_WORKER_TOKEN }}
           TUNNEL_HOST: ${{ secrets.TUNNEL_HOST }}
           TUNNEL_PORT: ${{ secrets.TUNNEL_PORT }}
+          BROWSER_HEADLESS: "0"
         run: |
           $dur = "${{ github.event.inputs.duration }}"
           if (-not $dur) { $dur = "330" }
