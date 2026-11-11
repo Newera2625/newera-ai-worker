@@ -48,10 +48,12 @@ jobs:
 
       - name: 启动虚拟显示器
         run: |
+          touch ~/.Xauthority
           Xvfb :99 -screen 0 1920x1080x24 > /tmp/xvfb.log 2>&1 &
           sleep 2
           DISPLAY=:99 fluxbox > /tmp/fluxbox.log 2>&1 &
           echo "DISPLAY=:99" >> $GITHUB_ENV
+          echo "XAUTHORITY=$HOME/.Xauthority" >> $GITHUB_ENV
           echo "BROWSER_HEADLESS=0" >> $GITHUB_ENV
 
       - name: 写入隧道密钥
@@ -91,9 +93,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r worker/requirements.txt
           python -m playwright install chromium
-
-      - name: 安装 Chrome
-        run: choco install googlechrome -y
 
       - name: 写入隧道密钥
         shell: pwsh
