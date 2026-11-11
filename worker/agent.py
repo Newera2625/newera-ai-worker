@@ -255,34 +255,122 @@ class DesktopOps:
         except Exception:
             pass
 
-    def _shot(self):
+    def _env_display(self):
+        env = dict(os.environ)
         if self.os_name != "windows":
-            self._load()  # 创建 XAUTHORITY，保证 scrot/X11 可用
-            path = os.path.join(tempfile.gettempdir(), "desk_%s.png" % uuid.uuid4().hex[:8])
+            env.setdefault("DISPLAY", ":99")
+            auth = os.path.expanduser("~/.Xauthority")
             try:
-                env = dict(os.environ)
-                env.setdefault("DISPLAY", ":99")
-                subprocess.run(["scrot", "-o", path], check=True, timeout=15, env=env,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                data = open(path, "rb").read()
-                try:
-                    os.remove(path)
-                except Exception:
-                    pass
-                w = h = 0
-                if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
-                    w = int.from_bytes(data[16:20], "big")
-                    h = int.from_bytes(data[20:24], "big")
-                return base64.b64encode(data).decode("ascii"), (w or 1920, h or 1080)
+                if not os.path.exists(auth):
+                    open(auth, "a").close()
             except Exception:
                 pass
+            env.setdefault("XAUTHORITY", auth)
+        return env
+
+    def _active_window(self):
+        if self.os_name == "windows":
+            try:
+                import pygetwindow as gw
+                w = gw.getActiveWindow()
+                if w and w.title and w.width > 20 and w.height > 20:
+                    return {"title": w.title, "x": int(w.left), "y": int(w.top),
+                            "w": int(w.width), "h": int(w.height)}
+            except Exception:
+                pass
+            return None
+        try:
+            env = self._env_display()
+            wid = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True,
+                                 timeout=5, env=env).stdout.strip()
+            if not wid:
+                return None
+            name = subprocess.run(["xdotool", "getwindowname", wid], capture_output=True, text=True,
+                                  timeout=5, env=env).stdout.strip()
+            geom = subprocess.run(["xdotool", "getwindowgeometry", "--shell", wid],
+                                  capture_output=True, text=True, timeout=5, env=env).stdout
+            vals = {}
+            for line in geom.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    vals[k.strip()] = v.strip()
+            x, y = int(vals.get("X", 0)), int(vals.get("Y", 0))
+            w, h = int(vals.get("WIDTH", 0)), int(vals.get("HEIGHT", 0))
+            if w > 20 and h > 20:
+                return {"id": wid, "title": name, "x": x, "y": y, "w": w, "h": h}
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _png_size(data):
+        if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+            return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+        return 0, 0
+
+    def _capture_file(self, cmd_factory, win):
+        path = os.path.join(tempfile.gettempdir(), "desk_%s.png" % uuid.uuid4().hex[:8])
+        try:
+            subprocess.run(cmd_factory(path), check=True, timeout=15, env=self._env_display(),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if not os.path.exists(path):
+                return None
+            data = open(path, "rb").read()
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+            w, h = self._png_size(data)
+            if data:
+                return base64.b64encode(data).decode("ascii"), (w or (win["w"] if win else 1920),
+                                                               h or (win["h"] if win else 1080))
+        except Exception:
+            pass
+        return None
+
+    def _shot(self, win=None):
+        if self.os_name != "windows":
+            self._load()
+            if win and win.get("id"):
+                out = self._capture_file(lambda p: ["import", "-window", win["id"], p], win)
+                if out:
+                    return out
+                out = self._capture_file(lambda p: ["scrot", "-u", "-o", p], win)
+                if out:
+                    return out
+            out = self._capture_file(lambda p: ["scrot", "-o", p], None)
+            if out:
+                return out
         self._hide_agent_windows()
         pg = self._load()
         from io import BytesIO
+        if win:
+            try:
+                img = pg.screenshot(region=(win["x"], win["y"], win["w"], win["h"]))
+                buf = BytesIO()
+                img.save(buf, format="PNG")
+                return base64.b64encode(buf.getvalue()).decode("ascii"), img.size
+            except Exception:
+                pass
         img = pg.screenshot()
         buf = BytesIO()
         img.save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode("ascii"), img.size
+
+    def _get_window(self, sid):
+        with self.lock:
+            s = self.sessions.get(sid or "")
+            return (s or {}).get("window")
+
+    def _title_matches(self, app, title):
+        low = (title or "").lower()
+        return (app in low
+                or (app in ("notepad", "text") and ("notepad" in low or "mousepad" in low or "gedit" in low or "text editor" in low))
+                or (app in ("calculator", "calc") and "calc" in low)
+                or (app in ("files", "explorer") and ("file" in low or "explorer" in low or "pcmanfm" in low or "nautilus" in low))
+                or (app == "writer" and ("writer" in low or "word" in low))
+                or (app == "paint" and "paint" in low)
+                or (app == "chrome" and ("chrome" in low or "chromium" in low)))
 
     def _windows(self):
         bad = ("hosted-compute-agent", "hostedcomputeagent", "github", "system properties", "program manager")
@@ -325,10 +413,12 @@ class DesktopOps:
             except Exception:
                 pass
 
-    def _result(self, action, sid, shot, extra=None):
+    def _result(self, action, sid, shot, extra=None, win=None):
         out = {"ok": True, "action": action, "session_id": sid,
                "screenshot_b64": shot[0], "screen": [shot[1][0], shot[1][1]],
                "windows": self._windows()[:20], "sessions": self.count()}
+        if win:
+            out["window_title"] = win.get("title", "")
         if extra:
             out.update(extra)
         return out
@@ -363,34 +453,45 @@ class DesktopOps:
             return {"ok": False, "error": "应用启动失败：%s" % str(e)[:200], "sessions": self.count()}
         time.sleep(float(params.get("wait") or 2.5))
         titles = self._windows()
+        win = None
         for t in titles:
-            low = t.lower()
-            if app in low \
-                    or (app in ("notepad", "text") and ("notepad" in low or "mousepad" in low or "gedit" in low or "text editor" in low)) \
-                    or (app in ("calculator", "calc") and "calc" in low) \
-                    or (app in ("files", "explorer") and ("file" in low or "explorer" in low or "pcmanfm" in low or "nautilus" in low)) \
-                    or (app == "writer" and ("writer" in low or "word" in low)) \
-                    or (app == "paint" and "paint" in low) \
-                    or (app == "chrome" and ("chrome" in low or "chromium" in low)):
+            if self._title_matches(app, t):
                 self._focus(t)
+                time.sleep(0.45)
+                win = self._active_window()
                 break
+        if win is None:
+            win = self._active_window()
         sid = "d_" + uuid.uuid4().hex[:12]
         with self.lock:
-            self.sessions[sid] = {"created": time.time(), "app": app}
-        shot = self._shot()
-        return self._result("desktop_launch", sid, shot, {"app": app, "pid": p.pid})
+            self.sessions[sid] = {"created": time.time(), "app": app, "window": win}
+        shot = self._shot(win)
+        return self._result("desktop_launch", sid, shot, {"app": app, "pid": p.pid}, win=win)
 
     def screenshot(self, params):
-        shot = self._shot()
-        return self._result("desktop_screenshot", params.get("session_id") or "d_desktop", shot)
+        sid = params.get("session_id")
+        win = self._get_window(sid) or self._active_window()
+        if sid and win:
+            with self.lock:
+                s = self.sessions.get(sid)
+                if s:
+                    s["window"] = win
+        shot = self._shot(win)
+        return self._result("desktop_screenshot", sid or "d_desktop", shot, win=win)
 
     def click(self, params):
+        sid = params.get("session_id")
+        win = self._get_window(sid) or self._active_window()
         pg = self._load()
-        pg.click(float(params.get("x") or 0), float(params.get("y") or 0))
+        ox = win["x"] if win else 0
+        oy = win["y"] if win else 0
+        pg.click(ox + float(params.get("x") or 0), oy + float(params.get("y") or 0))
         time.sleep(0.5)
-        return self._result("desktop_click", params.get("session_id"), self._shot())
+        return self._result("desktop_click", sid, self._shot(win), win=win)
 
     def type_text(self, params):
+        sid = params.get("session_id")
+        win = self._get_window(sid) or self._active_window()
         pg = self._load()
         text = str(params.get("text") or "")
         if not text:
@@ -403,13 +504,15 @@ class DesktopOps:
         if params.get("submit"):
             pg.press("enter")
         time.sleep(0.5)
-        return self._result("desktop_type", params.get("session_id"), self._shot())
+        return self._result("desktop_type", sid, self._shot(win), win=win)
 
     def key(self, params):
+        sid = params.get("session_id")
+        win = self._get_window(sid) or self._active_window()
         pg = self._load()
         pg.press(str(params.get("key") or "enter").strip())
         time.sleep(0.4)
-        return self._result("desktop_key", params.get("session_id"), self._shot())
+        return self._result("desktop_key", sid, self._shot(win), win=win)
 
     def windows_list(self, params):
         return {"ok": True, "action": "desktop_windows", "session_id": params.get("session_id"),
@@ -417,9 +520,16 @@ class DesktopOps:
 
     def focus(self, params):
         title = str(params.get("title") or "").strip()
+        sid = params.get("session_id")
         self._focus(title)
         time.sleep(0.5)
-        return self._result("desktop_focus", params.get("session_id"), self._shot(), {"title": title})
+        win = self._active_window()
+        if sid and win:
+            with self.lock:
+                s = self.sessions.get(sid)
+                if s:
+                    s["window"] = win
+        return self._result("desktop_focus", sid, self._shot(win), {"title": title}, win=win)
 
     def run(self, action, params):
         with self.lock:
