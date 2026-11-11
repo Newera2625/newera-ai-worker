@@ -283,6 +283,10 @@ class BrowserOps:
         with self._lock:
             return len(self._sessions)
 
+    def cleanup(self):
+        with self._lock:
+            self._cleanup()
+
     def shutdown(self):
         with self._lock:
             for sid in list(self._sessions):
