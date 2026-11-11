@@ -7,6 +7,7 @@
 - 支持浏览器操作与临时终端命令；到期自动退出
 """
 import argparse
+import base64
 import json
 import os
 import queue
@@ -53,10 +54,21 @@ class TerminalOps:
         self.os_name = os_name
         self.max_sessions = max_sessions
         self.idle_timeout = idle_timeout
-        base = os.path.join(tempfile.gettempdir(), "newera-ai-term")
-        safe = "win" if os_name == "windows" else "linux"
-        self.root = os.path.abspath(os.path.join(base, safe))
-        os.makedirs(self.root, exist_ok=True)
+        candidates = ([r"C:\workspace", r"C:\Users\Public\workspace"]
+                      if os_name == "windows" else ["/tmp/workspace"])
+        self.root = None
+        for base in candidates:
+            try:
+                os.makedirs(base, exist_ok=True)
+                probe = tempfile.mkdtemp(prefix=".probe_", dir=base)
+                os.rmdir(probe)
+                self.root = os.path.abspath(base)
+                break
+            except Exception:
+                continue
+        if not self.root:
+            self.root = os.path.abspath(os.path.join(tempfile.gettempdir(), "workspace"))
+            os.makedirs(self.root, exist_ok=True)
         self.sessions = {}
         self.lock = threading.RLock()
 
@@ -193,10 +205,198 @@ class TerminalOps:
         }
 
 
+# ---------------------------------------------------------------- desktop apps
+class DesktopOps:
+    """在虚拟显示器上启动桌面应用，截图并做简单鼠标/键盘操作。"""
+    def __init__(self, os_name):
+        self.os_name = os_name
+        self.sessions = {}
+        self.lock = threading.RLock()
+        self._pg = None
+        self._clip = None
+
+    def count(self):
+        with self.lock:
+            return len(self.sessions)
+
+    def _load(self):
+        if self._pg is None:
+            import pyautogui
+            pyautogui.FAILSAFE = False
+            self._pg = pyautogui
+        return self._pg
+
+    def _clipboard(self):
+        if self._clip is None:
+            import pyperclip
+            self._clip = pyperclip
+        return self._clip
+
+    def _shot(self):
+        pg = self._load()
+        from io import BytesIO
+        img = pg.screenshot()
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii"), img.size
+
+    def _windows(self):
+        if self.os_name == "windows":
+            try:
+                import pygetwindow as gw
+                return [w.title for w in gw.getAllWindows() if w.title]
+            except Exception:
+                return []
+        try:
+            out = subprocess.run(["wmctrl", "-l"], capture_output=True, text=True, timeout=5).stdout
+            titles = []
+            for line in out.splitlines():
+                parts = line.split(None, 3)
+                if len(parts) >= 4:
+                    titles.append(parts[3])
+            return titles
+        except Exception:
+            return []
+
+    def _focus(self, title):
+        if not title:
+            return
+        if self.os_name == "windows":
+            try:
+                import pygetwindow as gw
+                for w in gw.getWindowsWithTitle(title):
+                    try:
+                        w.activate()
+                        time.sleep(0.4)
+                        break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        else:
+            try:
+                subprocess.run(["xdotool", "search", "--onlyvisible", "--name", title, "windowactivate"],
+                               capture_output=True, timeout=5)
+            except Exception:
+                pass
+
+    def _result(self, action, sid, shot, extra=None):
+        out = {"ok": True, "action": action, "session_id": sid,
+               "screenshot_b64": shot[0], "screen": [shot[1][0], shot[1][1]],
+               "windows": self._windows()[:20], "sessions": self.count()}
+        if extra:
+            out.update(extra)
+        return out
+
+    def launch(self, params):
+        app = str(params.get("app") or "").strip().lower()
+        if self.os_name == "windows":
+            mapping = {
+                "calculator": ["calc.exe"], "calc": ["calc.exe"],
+                "notepad": ["notepad.exe"], "text": ["notepad.exe"],
+                "files": ["explorer.exe"], "explorer": ["explorer.exe"],
+                "paint": ["mspaint.exe"], "writer": ["wordpad.exe"],
+                "chrome": ["chrome.exe"],
+            }
+        else:
+            mapping = {
+                "calculator": ["xcalc"], "calc": ["xcalc"],
+                "notepad": ["mousepad"], "text": ["mousepad"],
+                "files": ["pcmanfm"], "explorer": ["pcmanfm"],
+                "writer": ["libreoffice", "--writer"],
+                "chrome": ["google-chrome", "--start-maximized"],
+            }
+        if app not in mapping:
+            return {"ok": False, "error": "不支持的应用，可用：" + "、".join(sorted(set(mapping))), "sessions": self.count()}
+        env = dict(os.environ)
+        if self.os_name != "windows":
+            env.setdefault("DISPLAY", os.environ.get("DISPLAY", ":99"))
+        try:
+            p = subprocess.Popen(mapping[app], env=env, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, cwd=tempfile.gettempdir())
+        except Exception as e:
+            return {"ok": False, "error": "应用启动失败：%s" % str(e)[:200], "sessions": self.count()}
+        time.sleep(float(params.get("wait") or 2.5))
+        titles = self._windows()
+        for t in titles:
+            low = t.lower()
+            if app in low \
+                    or (app in ("notepad", "text") and ("notepad" in low or "mousepad" in low or "gedit" in low or "text editor" in low)) \
+                    or (app in ("calculator", "calc") and "calc" in low) \
+                    or (app in ("files", "explorer") and ("file" in low or "explorer" in low or "pcmanfm" in low or "nautilus" in low)) \
+                    or (app == "writer" and ("writer" in low or "word" in low)) \
+                    or (app == "paint" and "paint" in low) \
+                    or (app == "chrome" and ("chrome" in low or "chromium" in low)):
+                self._focus(t)
+                break
+        sid = "d_" + uuid.uuid4().hex[:12]
+        with self.lock:
+            self.sessions[sid] = {"created": time.time(), "app": app}
+        shot = self._shot()
+        return self._result("desktop_launch", sid, shot, {"app": app, "pid": p.pid})
+
+    def screenshot(self, params):
+        shot = self._shot()
+        return self._result("desktop_screenshot", params.get("session_id") or "d_desktop", shot)
+
+    def click(self, params):
+        pg = self._load()
+        pg.click(float(params.get("x") or 0), float(params.get("y") or 0))
+        time.sleep(0.5)
+        return self._result("desktop_click", params.get("session_id"), self._shot())
+
+    def type_text(self, params):
+        pg = self._load()
+        text = str(params.get("text") or "")
+        if not text:
+            return {"ok": False, "error": "text 不能为空", "sessions": self.count()}
+        try:
+            self._clipboard().copy(text)
+            pg.hotkey("ctrl", "v")
+        except Exception:
+            pg.write(text, interval=0.02)
+        if params.get("submit"):
+            pg.press("enter")
+        time.sleep(0.5)
+        return self._result("desktop_type", params.get("session_id"), self._shot())
+
+    def key(self, params):
+        pg = self._load()
+        pg.press(str(params.get("key") or "enter").strip())
+        time.sleep(0.4)
+        return self._result("desktop_key", params.get("session_id"), self._shot())
+
+    def windows_list(self, params):
+        return {"ok": True, "action": "desktop_windows", "session_id": params.get("session_id"),
+                "windows": self._windows()[:40], "sessions": self.count()}
+
+    def focus(self, params):
+        title = str(params.get("title") or "").strip()
+        self._focus(title)
+        time.sleep(0.5)
+        return self._result("desktop_focus", params.get("session_id"), self._shot(), {"title": title})
+
+    def run(self, action, params):
+        with self.lock:
+            try:
+                fn = {
+                    "desktop_launch": self.launch, "desktop_screenshot": self.screenshot,
+                    "desktop_click": self.click, "desktop_type": self.type_text,
+                    "desktop_key": self.key, "desktop_windows": self.windows_list,
+                    "desktop_focus": self.focus,
+                }.get(action)
+                if not fn:
+                    return {"ok": False, "error": "不支持的应用工具动作: %s" % action, "sessions": self.count()}
+                return fn(params)
+            except Exception as e:
+                return {"ok": False, "action": action, "error": str(e)[:400], "sessions": self.count()}
+
+
 # ---------------------------------------------------------------- job loop
 def job_loop(os_name):
     bops = BrowserOps(max_sessions=4, idle_timeout=600)
     tops = TerminalOps(os_name)
+    dops = DesktopOps(os_name)
     STATE["sessions"] = 0
     while not STOP.is_set():
         try:
@@ -213,11 +413,13 @@ def job_loop(os_name):
             params = job.get("params") or {}
             if action == "terminal_exec":
                 out = tops.run(params)
+            elif action.startswith("desktop_"):
+                out = dops.run(action, params)
             else:
                 out = bops.run(action, params)
             out["elapsed"] = round(time.time() - started, 2)
             out["worker_id"] = STATE["worker_id"]
-            STATE["sessions"] = bops.count() + tops.count()
+            STATE["sessions"] = bops.count() + tops.count() + dops.count()
             if not out.get("ok"):
                 STATE["last_error"] = (out.get("error") or "")[:300]
             else:
