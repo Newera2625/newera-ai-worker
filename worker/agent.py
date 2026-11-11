@@ -144,10 +144,11 @@ class TerminalOps:
         timeout = int(min(max(float(params.get("timeout") or 30), 3), 120))
         if self.os_name == "windows":
             if shell == "powershell":
-                argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd]
+                argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " + cmd]
                 shell_name = "powershell"
             else:
-                argv = ["cmd.exe", "/d", "/s", "/c", cmd]
+                argv = ["cmd.exe", "/d", "/s", "/c", "chcp 65001 >nul & " + cmd]
                 shell_name = "cmd"
         else:
             if shell in ("cmd", "powershell"):
@@ -158,7 +159,7 @@ class TerminalOps:
         started = time.time()
         try:
             p = subprocess.run(argv, cwd=cwd, env=self._env(s), capture_output=True,
-                               text=True, errors="replace", timeout=timeout)
+                               text=True, encoding="utf-8", errors="replace", timeout=timeout)
             exit_code = p.returncode
             stdout = p.stdout or ""
             stderr = p.stderr or ""
