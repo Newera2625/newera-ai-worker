@@ -554,35 +554,76 @@ class DesktopOps:
     def click(self, params):
         sid = params.get("session_id")
         win = self._get_window(sid) or self._active_window()
-        pg = self._load()
-        ox = win["x"] if win else 0
-        oy = win["y"] if win else 0
-        pg.click(ox + float(params.get("x") or 0), oy + float(params.get("y") or 0))
+        x = float(params.get("x") or 0)
+        y = float(params.get("y") or 0)
+        if self.os_name != "windows" and win and win.get("id"):
+            # X11 下用 xdotool 的窗口相对坐标点击，避免窗口边框/绝对坐标偏差
+            env = self._env_display()
+            try:
+                subprocess.run(["xdotool", "windowactivate", win["id"]], env=env, timeout=5,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["xdotool", "mousemove", "--window", win["id"],
+                                str(int(x)), str(int(y)), "click", "1"], env=env, timeout=5,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pg = self._load()
+                pg.click((win["x"] if win else 0) + x, (win["y"] if win else 0) + y)
+        else:
+            pg = self._load()
+            pg.click((win["x"] if win else 0) + x, (win["y"] if win else 0) + y)
         time.sleep(0.5)
         return self._result("desktop_click", sid, self._shot(win), win=win)
 
     def type_text(self, params):
         sid = params.get("session_id")
         win = self._get_window(sid) or self._active_window()
-        pg = self._load()
         text = str(params.get("text") or "")
         if not text:
             return {"ok": False, "error": "text 不能为空", "sessions": self.count()}
-        try:
-            self._clipboard().copy(text)
-            pg.hotkey("ctrl", "v")
-        except Exception:
-            pg.write(text, interval=0.02)
-        if params.get("submit"):
-            pg.press("enter")
+        pasted = False
+        if self.os_name != "windows" and win and win.get("id"):
+            env = self._env_display()
+            try:
+                self._clipboard().copy(text)
+                subprocess.run(["xdotool", "windowactivate", win["id"]], env=env, timeout=5,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"], env=env, timeout=5,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if params.get("submit"):
+                    subprocess.run(["xdotool", "key", "Return"], env=env, timeout=5,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                pasted = True
+            except Exception:
+                pasted = False
+        if not pasted:
+            pg = self._load()
+            try:
+                self._clipboard().copy(text)
+                pg.hotkey("ctrl", "v")
+            except Exception:
+                pg.write(text, interval=0.02)
+            if params.get("submit"):
+                pg.press("enter")
         time.sleep(0.5)
         return self._result("desktop_type", sid, self._shot(win), win=win)
 
     def key(self, params):
         sid = params.get("session_id")
         win = self._get_window(sid) or self._active_window()
-        pg = self._load()
-        pg.press(str(params.get("key") or "enter").strip())
+        key = str(params.get("key") or "enter").strip()
+        sent = False
+        if self.os_name != "windows" and win and win.get("id"):
+            env = self._env_display()
+            try:
+                subprocess.run(["xdotool", "windowactivate", win["id"]], env=env, timeout=5,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["xdotool", "key", "--clearmodifiers", key], env=env, timeout=5,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                sent = True
+            except Exception:
+                sent = False
+        if not sent:
+            self._load().press(key)
         time.sleep(0.4)
         return self._result("desktop_key", sid, self._shot(win), win=win)
 
