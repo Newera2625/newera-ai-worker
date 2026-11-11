@@ -7,6 +7,7 @@
 - 返回统一结构：{ok, action, session_id, page:{title,url,text,links}, screenshot_b64, error}
 """
 import base64
+import os
 import re
 import threading
 import time
@@ -18,7 +19,164 @@ SHOT_QUALITY = 72
 
 BLOCKED_SCHEMES = ("file:", "chrome:", "chrome-extension:", "devtools:", "javascript:", "data:")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+      "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36")
+
+LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-infobars",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--lang=zh-CN",
+    "--window-size=1920,1080",
+    "--start-maximized",
+    "--use-gl=angle",
+    "--use-angle=swiftshader",
+]
+
+# 让网站看到一台普通的 Windows 桌面 Chrome，而不是 Playwright/无头浏览器
+STEALTH_JS = r"""
+(() => {
+  const defineGetter = (obj, prop, value) => {
+    try { Object.defineProperty(obj, prop, { get: () => value, configurable: true }); } catch (e) {}
+  };
+  try { Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => false, configurable: true }); } catch (e) {}
+  defineGetter(Navigator.prototype, 'platform', 'Win32');
+  defineGetter(Navigator.prototype, 'vendor', 'Google Inc.');
+  defineGetter(Navigator.prototype, 'productSub', '20030107');
+  defineGetter(Navigator.prototype, 'languages', ['zh-CN', 'zh', 'en']);
+  defineGetter(Navigator.prototype, 'hardwareConcurrency', 8);
+  defineGetter(Navigator.prototype, 'deviceMemory', 8);
+  defineGetter(Navigator.prototype, 'maxTouchPoints', 0);
+  defineGetter(Navigator.prototype, 'pdfViewerEnabled', true);
+  defineGetter(Navigator.prototype, 'appVersion', '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36');
+
+  const names = ['PDF Viewer', 'Chrome PDF Viewer', 'Chromium PDF Viewer', 'Microsoft Edge PDF Viewer', 'WebKit built-in PDF'];
+  const plugins = names.map(name => {
+    let p;
+    try { p = Object.create(Plugin.prototype); } catch (e) { p = {}; }
+    let mime0;
+    try { mime0 = Object.create(MimeType.prototype); } catch (e) { mime0 = {}; }
+    try {
+      Object.defineProperties(mime0, {
+        type: { value: 'application/pdf', enumerable: true },
+        suffixes: { value: 'pdf', enumerable: true },
+        description: { value: 'Portable Document Format', enumerable: true },
+        enabledPlugin: { value: p, enumerable: true }
+      });
+      Object.defineProperties(p, {
+        name: { value: name, enumerable: true },
+        filename: { value: 'internal-pdf-viewer', enumerable: true },
+        description: { value: 'Portable Document Format', enumerable: true },
+        length: { value: 1, enumerable: true },
+        0: { value: mime0, enumerable: true }
+      });
+    } catch (e) {}
+    return p;
+  });
+  let pluginArray;
+  try {
+    pluginArray = Object.create(PluginArray.prototype);
+    plugins.forEach((p, i) => {
+      Object.defineProperty(pluginArray, i, { get: () => p, enumerable: true, configurable: true });
+      Object.defineProperty(pluginArray, p.name, { get: () => p, enumerable: false, configurable: true });
+    });
+    Object.defineProperty(pluginArray, 'length', { get: () => plugins.length, configurable: true });
+  } catch (e) {
+    pluginArray = Object.assign([], plugins);
+    Object.defineProperty(pluginArray, 'length', { get: () => plugins.length, configurable: true });
+  }
+  pluginArray.item = i => plugins[i] || null;
+  pluginArray.namedItem = n => plugins.find(p => p.name === n) || null;
+  pluginArray.refresh = () => {};
+  defineGetter(Navigator.prototype, 'plugins', pluginArray);
+
+  const mime = plugins[0][0];
+  let mimeArray;
+  try {
+    mimeArray = Object.create(MimeTypeArray.prototype);
+    Object.defineProperty(mimeArray, 0, { get: () => mime, enumerable: true, configurable: true });
+    Object.defineProperty(mimeArray, 'length', { get: () => 1, configurable: true });
+  } catch (e) {
+    mimeArray = [mime];
+  }
+  mimeArray.item = i => (i === 0 ? mime : null);
+  mimeArray.namedItem = n => n === 'application/pdf' ? mime : null;
+  defineGetter(Navigator.prototype, 'mimeTypes', mimeArray);
+
+  window.chrome = window.chrome || {};
+  window.chrome.runtime = window.chrome.runtime || {};
+  window.chrome.app = window.chrome.app || {
+    isInstalled: false,
+    InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+    RunningState: { RUNNING: 'running', CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run' }
+  };
+  window.chrome.csi = window.chrome.csi || function () { return {}; };
+  window.chrome.loadTimes = window.chrome.loadTimes || function () { return {}; };
+
+  try {
+    const uaData = {
+      brands: [
+        { brand: 'Chromium', version: '136' },
+        { brand: 'Google Chrome', version: '136' },
+        { brand: 'Not.A/Brand', version: '99' }
+      ],
+      mobile: false,
+      platform: 'Windows',
+      getHighEntropyValues: async () => ({
+        architecture: 'x86', bitness: '64', brands: uaData.brands,
+        fullVersionList: [
+          { brand: 'Chromium', version: '136.0.0.0' },
+          { brand: 'Google Chrome', version: '136.0.0.0' },
+          { brand: 'Not.A/Brand', version: '99.0.0.0' }
+        ],
+        mobile: false, model: '', platform: 'Windows',
+        platformVersion: '15.0.0', uaFullVersion: '136.0.0.0', wow64: false
+      }),
+      toJSON: () => ({ brands: uaData.brands, mobile: false, platform: 'Windows' })
+    };
+    Object.defineProperty(Navigator.prototype, 'userAgentData', { get: () => uaData, configurable: true });
+  } catch (e) {}
+
+  try { Object.defineProperty(Notification, 'permission', { get: () => 'default', configurable: true }); } catch (e) {}
+  try {
+    const query = navigator.permissions && navigator.permissions.query;
+    if (query) {
+      navigator.permissions.query = p => {
+        if (p && p.name === 'notifications') return Promise.resolve({ state: 'prompt', onchange: null });
+        return query.call(navigator.permissions, p);
+      };
+    }
+  } catch (e) {}
+
+  const spoofGL = proto => {
+    if (!proto) return;
+    const orig = proto.getParameter;
+    proto.getParameter = function (p) {
+      if (p === 37445) return 'Google Inc. (NVIDIA)';
+      if (p === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+      return orig.apply(this, arguments);
+    };
+  };
+  try { spoofGL(window.WebGLRenderingContext && WebGLRenderingContext.prototype); } catch (e) {}
+  try { spoofGL(window.WebGL2RenderingContext && WebGL2RenderingContext.prototype); } catch (e) {}
+
+  try {
+    const origToString = Function.prototype.toString;
+    const fake = new WeakSet();
+    if (window.chrome.csi) fake.add(window.chrome.csi);
+    if (window.chrome.loadTimes) fake.add(window.chrome.loadTimes);
+    Function.prototype.toString = function () {
+      if (fake.has(this)) return 'function () { [native code] }';
+      return origToString.call(this);
+    };
+  } catch (e) {}
+})();
+"""
 
 SNAPSHOT_JS = """
 () => {
@@ -76,18 +234,38 @@ class BrowserOps:
                 pass
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-background-timer-throttling",
-                "--disable-renderer-backgrounding",
-                "--disable-backgrounding-occluded-windows",
-                "--lang=zh-CN",
-            ],
-        )
+
+        env_headless = os.environ.get("BROWSER_HEADLESS", "1").strip().lower()
+        headless = env_headless not in ("0", "false", "no", "off")
+        channel = os.environ.get("BROWSER_CHANNEL", "chrome").strip() or None
+        attempts = []
+        if channel:
+            attempts.append((channel, headless))
+        attempts.append((None, headless))
+        if not headless:
+            if channel:
+                attempts.append((channel, True))
+            attempts.append((None, True))
+
+        seen = set()
+        last = None
+        for ch, hl in attempts:
+            key = (ch or "", hl)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                kwargs = {"headless": hl, "args": LAUNCH_ARGS}
+                if ch:
+                    kwargs["channel"] = ch
+                self._browser = self._pw.chromium.launch(**kwargs)
+                print("[browser] launched channel=%s headless=%s" % (ch or "chromium", hl), flush=True)
+                return
+            except Exception as e:
+                last = e
+                print("[browser] launch failed channel=%s headless=%s: %s" %
+                      (ch or "chromium", hl, str(e)[:180]), flush=True)
+        raise RuntimeError("浏览器启动失败: %s" % (str(last)[:300] if last else "unknown"))
 
     def _cleanup(self):
         now = time.time()
@@ -111,14 +289,30 @@ class BrowserOps:
     def _new_session(self):
         self._ensure_browser()
         self._cleanup()
-        ctx = self._browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent=UA,
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
-            java_script_enabled=True,
-            accept_downloads=False,
-        )
+        ctx_kwargs = {
+            "viewport": {"width": 1366, "height": 768},
+            "screen": {"width": 1920, "height": 1080},
+            "user_agent": UA,
+            "locale": "zh-CN",
+            "timezone_id": "Asia/Shanghai",
+            "color_scheme": "light",
+            "device_scale_factor": 1,
+            "is_mobile": False,
+            "has_touch": False,
+            "java_script_enabled": True,
+            "accept_downloads": False,
+            "extra_http_headers": {
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Sec-CH-UA-Platform": '"Windows"',
+                "Sec-CH-UA-Mobile": "?0",
+            },
+        }
+        try:
+            ctx = self._browser.new_context(**ctx_kwargs)
+        except TypeError:
+            ctx_kwargs.pop("screen", None)
+            ctx = self._browser.new_context(**ctx_kwargs)
+        ctx.add_init_script(STEALTH_JS)
         page = ctx.new_page()
         page.set_default_timeout(20000)
         page.set_default_navigation_timeout(30000)
