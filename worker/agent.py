@@ -662,8 +662,8 @@ class DesktopOps:
 
 # ---------------------------------------------------------------- job loop
 def job_loop(os_name):
-    bops = BrowserOps(max_sessions=4, idle_timeout=600)
-    tops = TerminalOps(os_name)
+    bops = BrowserOps(max_sessions=8, idle_timeout=14400)
+    tops = TerminalOps(os_name, max_sessions=16, idle_timeout=14400)
     dops = DesktopOps(os_name)
     STATE["sessions"] = 0
     while not STOP.is_set():
