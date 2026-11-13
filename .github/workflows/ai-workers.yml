@@ -47,6 +47,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
 
+      - name: 安装 MCP 服务
+        run: |
+          npm install -g @playwright/mcp@latest @modelcontextprotocol/server-filesystem \
+            @wonderwhy-er/desktop-commander || true
+          node -v && npm -v
+
       - name: 启动虚拟显示器
         run: |
           touch ~/.Xauthority
@@ -66,6 +72,11 @@ jobs:
       - name: 运行工具机 Linux #${{ matrix.slot }}
         env:
           AI_WORKER_TOKEN: ${{ secrets.AI_WORKER_TOKEN }}
+          TUNNEL_HOST: ${{ secrets.TUNNEL_HOST }}
+          TUNNEL_PORT: ${{ secrets.TUNNEL_PORT }}
+          MCP_SERVERS: browser,files,system
+          MCP_BROWSER: chrome
+          MCP_JOB_TIMEOUT: "150"
         run: |
           python worker/agent.py \
             --os linux \
@@ -100,6 +111,12 @@ jobs:
           choco install tesseract -y
           echo "C:\Program Files\Tesseract-OCR" >> $env:GITHUB_PATH
 
+      - name: 安装 MCP 服务
+        shell: pwsh
+        run: |
+          npm install -g @playwright/mcp@latest @modelcontextprotocol/server-filesystem @wonderwhy-er/desktop-commander
+          node -v
+
       - name: 写入隧道密钥
         shell: pwsh
         run: |
@@ -117,6 +134,9 @@ jobs:
           TUNNEL_HOST: ${{ secrets.TUNNEL_HOST }}
           TUNNEL_PORT: ${{ secrets.TUNNEL_PORT }}
           BROWSER_HEADLESS: "0"
+          MCP_SERVERS: browser,files,system
+          MCP_BROWSER: chrome
+          MCP_JOB_TIMEOUT: "150"
         run: |
           $dur = "${{ github.event.inputs.duration }}"
           if (-not $dur) { $dur = "330" }
