@@ -74,7 +74,7 @@ class StdioMCP:
         except Exception:
             pass
 
-    def start(self, timeout=25):
+    def start(self, timeout=75):
         env = dict(os.environ)
         env.update(self.env or {})
         try:
@@ -273,28 +273,40 @@ class MCPHub:
             s.stop()
 
 
+def _launcher(pkg, binname, extra=None, workdir=None):
+    """优先用全局安装的可执行文件，找不到再用 npx 现拉，避免冷启动超时。"""
+    path = shutil.which(binname)
+    if path:
+        cmd = [path]
+    else:
+        cmd = ["npx", "--yes", pkg]
+    return cmd + list(extra or [])
+
+
 def build_hub(workdir):
     """按环境变量决定挂载哪些 MCP 服务（可用 MCP_SERVERS 关闭）。"""
     enabled = (os.environ.get("MCP_SERVERS") or "browser,files,system").lower()
     hub = MCPHub()
-    env_common = {}
+    env_common = dict(os.environ)
+    env_common.setdefault("HOME", "/root")
     if os.environ.get("DISPLAY"):
         env_common["DISPLAY"] = os.environ["DISPLAY"]
-    if os.environ.get("BROWSER_HEADLESS"):
-        env_common["BROWSER_HEADLESS"] = os.environ["BROWSER_HEADLESS"]
 
     if "browser" in enabled:
-        args = ["--yes", "@playwright/mcp@latest", "--isolated", "--no-sandbox"]
+        extra = ["--isolated", "--no-sandbox"]
         if os.environ.get("MCP_BROWSER", "").strip():
-            args += ["--browser", os.environ["MCP_BROWSER"].strip()]
-        hub.add(StdioMCP("browser", ["npx"] + args, env=env_common, cwd=workdir))
+            extra += ["--browser", os.environ["MCP_BROWSER"].strip()]
+        hub.add(StdioMCP("browser", _launcher("@playwright/mcp@latest", "playwright-mcp",
+                                              extra, workdir), env=env_common, cwd=workdir))
 
     if "files" in enabled:
-        hub.add(StdioMCP("files", ["npx", "--yes", "@modelcontextprotocol/server-filesystem",
-                                   workdir], env=env_common, cwd=workdir))
+        hub.add(StdioMCP("files", _launcher("@modelcontextprotocol/server-filesystem",
+                                            "mcp-server-filesystem", [workdir], workdir),
+                         env=env_common, cwd=workdir))
 
     if "system" in enabled:
-        hub.add(StdioMCP("system", ["npx", "--yes", "@wonderwhy-er/desktop-commander"],
+        hub.add(StdioMCP("system", _launcher("@wonderwhy-er/desktop-commander",
+                                             "desktop-commander", [], workdir),
                          env=env_common, cwd=workdir))
     return hub
 
