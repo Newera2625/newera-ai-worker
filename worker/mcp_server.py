@@ -45,6 +45,13 @@ _ACTION = {
     "desktop_key": "desktop_key",
     "desktop_windows": "desktop_windows",
     "desktop_focus": "desktop_focus",
+    # 验收与交付
+    "validate_page": "validate_preview",
+    "package_zip": "package_zip",
+    "bind_task": "bind_task",
+    "sync_task": "sync_task",
+    "task_status": "task_status",
+    "env_info": "env_info",
 }
 
 _OBJ = {"type": "object", "properties": {}, "additionalProperties": True}
