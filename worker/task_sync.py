@@ -16,6 +16,7 @@ import zipfile
 
 API = "https://api.github.com"
 SYNC_INTERVAL = 360  # 6 分钟
+PROXY = os.environ.get("GITHUB_PROXY", "https://gh-proxy.com/").rstrip("/") + "/"
 
 
 def _headers(token):
@@ -253,6 +254,30 @@ class TaskSync:
                 self.sync_once(cid)
             except Exception:
                 pass
+
+    def run(self, action, params):
+        """自研 /run 协议里的同步类动作入口。"""
+        params = params or {}
+        cid = params.get("cid") or ""
+        src_dir = params.get("dir") or ""
+        try:
+            if action == "bind_task":
+                item = self.bind(cid, params.get("owner") or "", params.get("repo") or "",
+                                 params.get("branch") or "", params.get("prefix") or "",
+                                 params.get("token") or "", src_dir)
+                return {"ok": True, "bound": True, "branch": item.get("branch"),
+                        "repo": item.get("repo")}
+            if action == "sync_task":
+                return self.sync_once(cid)
+            if action == "package_zip":
+                return self.package_zip(cid, proxy=PROXY)
+            if action == "restore_task":
+                return self.restore(cid, params.get("owner") or "", params.get("repo") or "",
+                                    params.get("branch") or "", params.get("prefix") or "",
+                                    params.get("token") or "", src_dir)
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:300]}
+        return {"ok": False, "error": "不支持的同步动作: %s" % action}
 
     def restore(self, cid, owner, repo, branch, prefix, token, src_dir):
         """工具机换机器后，从 GitHub 任务分支恢复工作副本。"""
