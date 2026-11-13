@@ -330,7 +330,11 @@ class BrowserOps:
             seen.add(key)
             try:
                 kwargs = {"headless": hl, "args": LAUNCH_ARGS}
-                if ch:
+                exe = (os.environ.get("BROWSER_EXECUTABLE") or "").strip()
+                if exe and os.path.exists(exe):
+                    # 允许指定已有的 Chrome/Chromium 可执行文件（本地测试、精简镜像常需要）
+                    kwargs["executable_path"] = exe
+                elif ch:
                     kwargs["channel"] = ch
                 self._browser = self._pw.chromium.launch(**kwargs)
                 print("[browser] launched channel=%s headless=%s" % (ch or "chromium", hl), flush=True)
