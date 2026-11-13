@@ -182,6 +182,7 @@ class MCPHub:
         self.routes = {}   # 对外工具名 -> (server, 原始工具名)
         self.by_name = {}  # 原始工具名 -> 对外工具名
         self.native = None
+        self._native_routes = {}
         self.ready = False
         self.error = ""
 
@@ -209,6 +210,12 @@ class MCPHub:
                     public = "%s_%s" % (s.name, name)
                 self.routes[public] = (s.name, name)
                 self.by_name.setdefault(name, public)
+        if self.native:
+            try:
+                for t in self.native.list_tools():
+                    self._native_routes["native_" + t["name"]] = t["name"]
+            except Exception as e:
+                _log("native routes failed: %s" % e)
         self.ready = bool(self.routes)
         return self.ready
 
@@ -237,7 +244,6 @@ class MCPHub:
                     item["name"] = pub
                     item["description"] = "[native] " + (t.get("description") or "")
                     out.append(item)
-                    self._native_routes = getattr(self, "_native_routes", {})
                     self._native_routes[pub] = t["name"]
             except Exception as e:
                 _log("native tools failed: %s" % e)
