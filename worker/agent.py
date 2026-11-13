@@ -660,11 +660,171 @@ class DesktopOps:
                 return {"ok": False, "action": action, "error": str(e)[:400], "sessions": self.count()}
 
 
+# ---------------------------------------------------------------- project files
+class ProjectOps:
+    """工具机上的项目工作目录：每台机器保存一份任务工作副本。"""
+
+    def __init__(self):
+        self.root = os.path.abspath(os.path.join(tempfile.gettempdir(), "newera-projects"))
+        try:
+            os.makedirs(self.root, exist_ok=True)
+        except Exception:
+            pass
+        self.lock = threading.RLock()
+
+    def _safe_cid(self, cid):
+        s = re.sub(r"[^A-Za-z0-9._-]", "-", str(cid or "task")).strip("-.")
+        return (s or "task")[:60]
+
+    def _dir(self, cid):
+        d = os.path.join(self.root, self._safe_cid(cid))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _clean_path(self, path):
+        parts = []
+        for p in str(path or "").replace("\\", "/").split("/"):
+            p = p.strip()
+            if not p or p in (".", ".."):
+                continue
+            p = re.sub(r"[^A-Za-z0-9._-]", "-", p)
+            parts.append(p[:80])
+        return "/".join(parts) or "artifact.txt"
+
+    def _files(self, params):
+        files = params.get("files")
+        if not isinstance(files, dict):
+            return {}
+        out = {}
+        for path, content in files.items():
+            out[self._clean_path(path)] = str(content if content is not None else "")
+        return out
+
+    def _write(self, d, files):
+        for path, content in files.items():
+            full = os.path.abspath(os.path.join(d, path))
+            if not full.startswith(os.path.abspath(d) + os.sep):
+                continue
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(content)
+
+    def init(self, params):
+        cid = params.get("cid") or ""
+        with self.lock:
+            d = self._dir(cid)
+            shutil.rmtree(d, ignore_errors=True)
+            os.makedirs(d, exist_ok=True)
+            files = self._files(params)
+            self._write(d, files)
+        return {"ok": True, "action": "project_init", "project_dir": d,
+                "files": sorted(files), "count": len(files)}
+
+    def write(self, params):
+        cid = params.get("cid") or ""
+        files = self._files(params)
+        with self.lock:
+            d = self._dir(cid)
+            self._write(d, files)
+        return {"ok": True, "action": "project_write", "project_dir": d,
+                "files": sorted(files), "count": len(files)}
+
+    def read(self, params):
+        cid = params.get("cid") or ""
+        path = self._clean_path(params.get("path") or params.get("filename") or "")
+        with self.lock:
+            d = self._dir(cid)
+            full = os.path.abspath(os.path.join(d, path))
+            if not full.startswith(os.path.abspath(d) + os.sep) or not os.path.isfile(full):
+                return {"ok": False, "error": "文件不存在：%s" % path, "project_dir": d}
+            text = open(full, encoding="utf-8", errors="replace").read()
+        lines = text.splitlines()
+        total = len(lines)
+        try:
+            start = int(params.get("start_line") or 1)
+        except Exception:
+            start = 1
+        try:
+            end = int(params.get("end_line") or total)
+        except Exception:
+            end = total
+        start = max(1, start)
+        end = min(max(start, end), total)
+        return {"ok": True, "action": "project_read", "project_dir": d, "path": path,
+                "content": "\n".join(lines[start - 1:end]), "total_lines": total,
+                "start_line": start, "end_line": end}
+
+    def list(self, params):
+        cid = params.get("cid") or ""
+        with self.lock:
+            d = self._dir(cid)
+            out = []
+            for root, _dirs, names in os.walk(d):
+                for name in names:
+                    full = os.path.join(root, name)
+                    rel = os.path.relpath(full, d).replace("\\", "/")
+                    try:
+                        text = open(full, encoding="utf-8", errors="replace").read()
+                    except Exception:
+                        text = ""
+                    out.append({"path": rel, "lines": len(text.splitlines()),
+                                "chars": len(text)})
+        return {"ok": True, "action": "project_list", "project_dir": d,
+                "files": sorted(out, key=lambda x: x["path"])}
+
+    def search(self, params):
+        cid = params.get("cid") or ""
+        query = str(params.get("query") or "").strip()
+        if not query:
+            return {"ok": False, "error": "query 不能为空"}
+        try:
+            limit = int(params.get("max_results") or 50)
+        except Exception:
+            limit = 50
+        limit = max(1, min(limit, 200))
+        hits = []
+        with self.lock:
+            d = self._dir(cid)
+            for root, _dirs, names in os.walk(d):
+                for name in names:
+                    full = os.path.join(root, name)
+                    rel = os.path.relpath(full, d).replace("\\", "/")
+                    try:
+                        lines = open(full, encoding="utf-8", errors="replace").read().splitlines()
+                    except Exception:
+                        continue
+                    for i, line in enumerate(lines, 1):
+                        if query.lower() in line.lower():
+                            hits.append("%s:%d: %s" % (rel, i, line.strip()[:400]))
+                            if len(hits) >= limit:
+                                break
+                    if len(hits) >= limit:
+                        break
+        return {"ok": True, "action": "project_search", "project_dir": d,
+                "matches": hits, "count": len(hits)}
+
+    def run(self, action, params):
+        with self.lock:
+            try:
+                fn = {
+                    "project_init": self.init, "project_write": self.write,
+                    "project_read": self.read, "project_list": self.list,
+                    "project_search": self.search,
+                }.get(action)
+                if not fn:
+                    return {"ok": False, "error": "不支持的项目文件动作: %s" % action}
+                return fn(params)
+            except Exception as e:
+                return {"ok": False, "action": action,
+                        "error": (str(e) or e.__class__.__name__)[:400]}
+
+
 # ---------------------------------------------------------------- job loop
 def job_loop(os_name):
     bops = BrowserOps(max_sessions=8, idle_timeout=14400)
     tops = TerminalOps(os_name, max_sessions=16, idle_timeout=14400)
     dops = DesktopOps(os_name)
+    pops = ProjectOps()
     STATE["sessions"] = 0
     while not STOP.is_set():
         try:
@@ -679,7 +839,9 @@ def job_loop(os_name):
         try:
             action = job.get("action") or ""
             params = job.get("params") or {}
-            if action == "terminal_exec":
+            if action.startswith("project_"):
+                out = pops.run(action, params)
+            elif action == "terminal_exec":
                 out = tops.run(params)
             elif action.startswith("desktop_"):
                 out = dops.run(action, params)
