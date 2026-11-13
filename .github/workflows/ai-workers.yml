@@ -47,30 +47,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
 
-      - name: 安装 MCP 服务
-        run: |
-          npm install -g @playwright/mcp@latest @modelcontextprotocol/server-filesystem \
-            @wonderwhy-er/desktop-commander || true
-          node -v && npm -v
-
-      - name: 预置 Desktop Commander 配置（跳过引导页）
-        run: |
-          mkdir -p ~/.claude-server-commander
-          cat > ~/.claude-server-commander/config.json <<'JSON'
-          {
-            "version": 1,
-            "blockedCommands": [],
-            "allowedDirectories": [],
-            "fileReadLineLimit": 2000,
-            "fileWriteLineLimit": 500,
-            "telemetryEnabled": false,
-            "sawOnboardingPage": true,
-            "pendingWelcomeOnboarding": false
-          }
-          JSON
-          echo "DC_FLAG_URL=http://127.0.0.1:9/flags" >> $GITHUB_ENV
-          echo "DESKTOP_COMMANDER_DISABLE_TELEMETRY=1" >> $GITHUB_ENV
-
       - name: 启动虚拟显示器
         run: |
           touch ~/.Xauthority
@@ -92,8 +68,7 @@ jobs:
           AI_WORKER_TOKEN: ${{ secrets.AI_WORKER_TOKEN }}
           TUNNEL_HOST: ${{ secrets.TUNNEL_HOST }}
           TUNNEL_PORT: ${{ secrets.TUNNEL_PORT }}
-          MCP_SERVERS: browser,files,system
-          MCP_BROWSER: chrome
+          MCP_SERVERS: none
           MCP_JOB_TIMEOUT: "150"
         run: |
           python worker/agent.py \
@@ -129,12 +104,6 @@ jobs:
           choco install tesseract -y
           echo "C:\Program Files\Tesseract-OCR" >> $env:GITHUB_PATH
 
-      - name: 安装 MCP 服务
-        shell: pwsh
-        run: |
-          npm install -g @playwright/mcp@latest @modelcontextprotocol/server-filesystem @wonderwhy-er/desktop-commander
-          node -v
-
       - name: 写入隧道密钥
         shell: pwsh
         run: |
@@ -145,16 +114,6 @@ jobs:
           [IO.File]::WriteAllText($path, $key + "`n")
           icacls $path /inheritance:r /grant:r "$($env:USERNAME):(R)"
 
-      - name: 预置 Desktop Commander 配置（跳过引导页）
-        shell: powershell
-        run: |
-          $dir = Join-Path $env:USERPROFILE ".claude-server-commander"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $cfg = '{"version":1,"blockedCommands":[],"allowedDirectories":[],"fileReadLineLimit":2000,"fileWriteLineLimit":500,"telemetryEnabled":false,"sawOnboardingPage":true,"pendingWelcomeOnboarding":false}'
-          Set-Content -Path (Join-Path $dir "config.json") -Value $cfg -Encoding ASCII
-          "DC_FLAG_URL=http://127.0.0.1:9/flags" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "DESKTOP_COMMANDER_DISABLE_TELEMETRY=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: 运行工具机 Windows #${{ matrix.slot }}
         shell: pwsh
         env:
@@ -162,8 +121,7 @@ jobs:
           TUNNEL_HOST: ${{ secrets.TUNNEL_HOST }}
           TUNNEL_PORT: ${{ secrets.TUNNEL_PORT }}
           BROWSER_HEADLESS: "0"
-          MCP_SERVERS: browser,files,system
-          MCP_BROWSER: chrome
+          MCP_SERVERS: none
           MCP_JOB_TIMEOUT: "150"
         run: |
           $dur = "${{ github.event.inputs.duration }}"
