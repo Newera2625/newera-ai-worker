@@ -214,6 +214,51 @@ class TerminalOps:
 
 
 # ---------------------------------------------------------------- desktop apps
+def _trim_uniform_border(img, tol=12, max_ratio=0.25):
+    """自动裁掉四周纯色边框（如虚拟显示器的黑边/白边）。"""
+    try:
+        w, h = img.size
+        px = img.load()
+        corners = [px[0, 0], px[w - 1, 0], px[0, h - 1], px[w - 1, h - 1]]
+        bg = corners[0]
+        if any(abs(c[0] - bg[0]) + abs(c[1] - bg[1]) + abs(c[2] - bg[2]) > tol * 3 for c in corners):
+            return img
+
+        def row_bg(y):
+            step = max(1, w // 60)
+            for x in range(0, w, step):
+                c = px[x, y]
+                if abs(c[0] - bg[0]) + abs(c[1] - bg[1]) + abs(c[2] - bg[2]) > tol * 3:
+                    return False
+            return True
+
+        def col_bg(x):
+            step = max(1, h // 60)
+            for y in range(0, h, step):
+                c = px[x, y]
+                if abs(c[0] - bg[0]) + abs(c[1] - bg[1]) + abs(c[2] - bg[2]) > tol * 3:
+                    return False
+            return True
+
+        top = 0
+        while top < h * max_ratio and row_bg(top):
+            top += 1
+        bottom = h - 1
+        while bottom > h * (1 - max_ratio) and row_bg(bottom):
+            bottom -= 1
+        left = 0
+        while left < w * max_ratio and col_bg(left):
+            left += 1
+        right = w - 1
+        while right > w * (1 - max_ratio) and col_bg(right):
+            right -= 1
+        if right - left < 40 or bottom - top < 40:
+            return img
+        return img.crop((left, top, right + 1, bottom + 1))
+    except Exception:
+        return img
+
+
 class DesktopOps:
     """在虚拟显示器上启动桌面应用，截图并做简单鼠标/键盘操作。"""
     def __init__(self, os_name):
@@ -336,7 +381,38 @@ class DesktopOps:
             pass
         return None
 
-    def _shot(self, win=None):
+    def _shot(self, win=None, crop=None, trim=False):
+        shot = self._shot_raw(win)
+        try:
+            data, size = shot if isinstance(shot, tuple) else (shot, None)
+            if not data:
+                return shot
+            if isinstance(crop, dict) or trim:
+                from io import BytesIO
+                from PIL import Image
+                img = Image.open(BytesIO(base64.b64decode(data))).convert("RGB")
+                if isinstance(crop, dict):
+                    l = int(float(crop.get("left") or crop.get("x") or 0))
+                    t = int(float(crop.get("top") or crop.get("y") or 0))
+                    r = int(float(crop.get("right") or 0))
+                    b = int(float(crop.get("bottom") or 0))
+                    w = int(float(crop.get("w") or crop.get("width") or 0))
+                    h = int(float(crop.get("h") or crop.get("height") or 0))
+                    box = (max(0, l), max(0, t),
+                           img.width - max(0, r) if r else (l + w if w else img.width),
+                           img.height - max(0, b) if b else (t + h if h else img.height))
+                    if box[2] > box[0] and box[3] > box[1]:
+                        img = img.crop(box)
+                if trim:
+                    img = _trim_uniform_border(img)
+                buf = BytesIO()
+                img.save(buf, format="PNG")
+                return base64.b64encode(buf.getvalue()).decode("ascii"), img.size
+        except Exception as e:
+            print("[shot-crop] %s" % str(e)[:120], flush=True)
+        return shot
+
+    def _shot_raw(self, win=None):
         if self.os_name != "windows":
             self._load()
             if win and win.get("id"):
@@ -556,7 +632,7 @@ class DesktopOps:
                 s = self.sessions.get(sid)
                 if s:
                     s["window"] = win
-        shot = self._shot(win)
+        shot = self._shot(win, crop=params.get("crop"), trim=bool(params.get("trim")))
         return self._result("desktop_screenshot", sid or "d_desktop", shot, win=win)
 
     def click(self, params):
@@ -581,6 +657,65 @@ class DesktopOps:
             pg.click((win["x"] if win else 0) + x, (win["y"] if win else 0) + y)
         time.sleep(0.5)
         return self._result("desktop_click", sid, self._shot(win), win=win)
+
+
+    def _abs(self, win, x, y):
+        return (int((win or {}).get("x") or 0) + int(x), int((win or {}).get("y") or 0) + int(y))
+
+    def drag(self, params):
+        """应用内滑动/拖拽（滚动条、滑块、拖拽排序）。"""
+        sid = params.get("session_id")
+        win = self._get_window(sid) or self._active_window()
+        pg = self._load()
+        x1 = float(params.get("x") or 0); y1 = float(params.get("y") or 0)
+        x2 = float(params.get("to_x") if params.get("to_x") is not None else x1 + 200)
+        y2 = float(params.get("to_y") if params.get("to_y") is not None else y1)
+        ax1, ay1 = self._abs(win, x1, y1)
+        ax2, ay2 = self._abs(win, x2, y2)
+        try:
+            pg.moveTo(ax1, ay1, duration=0.15)
+            pg.mouseDown()
+            pg.moveTo(ax2, ay2, duration=float(params.get("duration") or 0.45))
+            pg.mouseUp()
+        except Exception as e:
+            return {"ok": False, "action": "desktop_drag", "error": str(e)[:200]}
+        time.sleep(0.4)
+        return self._result("desktop_drag", sid, self._shot(win), win=win)
+
+    def scroll(self, params):
+        """应用内滚动滚轮（正数向上、负数向下）。"""
+        sid = params.get("session_id")
+        win = self._get_window(sid) or self._active_window()
+        pg = self._load()
+        clicks = int(params.get("clicks") or params.get("dy") or -5)
+        if params.get("x") is not None:
+            ax, ay = self._abs(win, params.get("x") or 0, params.get("y") or 0)
+            pg.moveTo(ax, ay)
+        pg.scroll(clicks)
+        time.sleep(0.4)
+        return self._result("desktop_scroll", sid, self._shot(win), win=win)
+
+    def double_click(self, params):
+        sid = params.get("session_id")
+        win = self._get_window(sid) or self._active_window()
+        pg = self._load()
+        ax, ay = self._abs(win, params.get("x") or 0, params.get("y") or 0)
+        pg.doubleClick(ax, ay, interval=0.12)
+        time.sleep(0.4)
+        return self._result("desktop_double_click", sid, self._shot(win), win=win)
+
+    def key_combo(self, params):
+        """组合键，如 ctrl+c、ctrl+shift+t、alt+F4。"""
+        sid = params.get("session_id")
+        win = self._get_window(sid) or self._active_window()
+        combo = str(params.get("combo") or params.get("key") or "").strip()
+        if not combo:
+            return {"ok": False, "error": "combo 不能为空，例如 ctrl+c"}
+        keys = [k.strip().lower() for k in combo.replace(" ", "").split("+") if k.strip()]
+        pg = self._load()
+        pg.hotkey(*keys)
+        time.sleep(0.4)
+        return self._result("desktop_key_combo", sid, self._shot(win), {"combo": combo}, win=win)
 
     def type_text(self, params):
         sid = params.get("session_id")
@@ -659,7 +794,9 @@ class DesktopOps:
                     "desktop_launch": self.launch, "desktop_screenshot": self.screenshot,
                     "desktop_click": self.click, "desktop_type": self.type_text,
                     "desktop_key": self.key, "desktop_windows": self.windows_list,
-                    "desktop_focus": self.focus,
+                    "desktop_focus": self.focus, "desktop_drag": self.drag,
+                    "desktop_scroll": self.scroll, "desktop_double_click": self.double_click,
+                    "desktop_key_combo": self.key_combo,
                 }.get(action)
                 if not fn:
                     return {"ok": False, "error": "不支持的应用工具动作: %s" % action, "sessions": self.count()}
