@@ -23,7 +23,7 @@ def _headers(token):
     return {
         "Authorization": "Bearer " + token,
         "Accept": "application/vnd.github+api+json",
-        "X-GitHub-Api-Version": "2022-11-30",
+        "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "newera-ai-worker",
     }
 
@@ -100,7 +100,27 @@ def push_files(owner, repo, branch, files, token, message="sync", prefix=""):
     return sha
 
 
+_PUSH_LOCK = threading.RLock()
+
+
 def push_bytes(owner, repo, branch, path, data, token, message="upload"):
+    """串行推送，避免后台同步和打包同时改同一分支导致 GitHub 400（版本冲突）。"""
+    last = None
+    with _PUSH_LOCK:
+        for attempt in range(3):
+            try:
+                return _push_bytes_once(owner, repo, branch, path, data, token, message)
+            except Exception as e:
+                last = e
+                msg = str(e)
+                if "400" in msg or "409" in msg or "422" in msg:
+                    time.sleep(0.8 + attempt * 0.5)
+                    continue
+                raise
+    raise last
+
+
+def _push_bytes_once(owner, repo, branch, path, data, token, message="upload"):
     """把二进制文件（如 zip）作为 blob 推到分支，返回 raw 下载地址。"""
     base = "%s/repos/%s/%s" % (API, owner, repo)
     parent = ""
