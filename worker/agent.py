@@ -25,9 +25,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from browser_ops import BrowserOps  # noqa: E402
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 STOP = threading.Event()
-JOBS = queue.Queue(maxsize=4)
+JOBS = queue.Queue(maxsize=8)
+SERVICES = {"ops": None}
 STATE = {
     "busy": False, "job": "", "sessions": 0,
     "os": "", "slot": 0, "worker_id": "", "started": time.time(),
@@ -681,6 +682,9 @@ class ProjectOps:
         os.makedirs(d, exist_ok=True)
         return d
 
+    def dir_for(self, cid):
+        return self._dir(cid)
+
     def _clean_path(self, path):
         parts = []
         for p in str(path or "").replace("\\", "/").split("/"):
@@ -803,13 +807,114 @@ class ProjectOps:
         return {"ok": True, "action": "project_search", "project_dir": d,
                 "matches": hits, "count": len(hits)}
 
+    def edit(self, params):
+        """在文件里做局部替换；old_string 必须唯一（除非 replace_all）。"""
+        cid = params.get("cid") or ""
+        path = self._clean_path(params.get("path") or params.get("filename") or "")
+        old_string = params.get("old_string")
+        new_string = params.get("new_string")
+        if old_string is None or new_string is None:
+            return {"ok": False, "error": "edit 需要 old_string 与 new_string"}
+        with self.lock:
+            d = self._dir(cid)
+            full = os.path.abspath(os.path.join(d, path))
+            if not full.startswith(os.path.abspath(d) + os.sep) or not os.path.isfile(full):
+                return {"ok": False, "error": "文件不存在：%s" % path}
+            body = open(full, encoding="utf-8", errors="replace").read()
+            if old_string == "":
+                return {"ok": False, "error": "edit 的 old_string 不能为空"}
+            if old_string not in body:
+                return {"ok": False, "error": "没有在 %s 中找到 old_string" % path}
+            count = body.count(old_string)
+            replace_all = bool(params.get("replace_all"))
+            if count > 1 and not replace_all:
+                return {"ok": False,
+                        "error": "old_string 在 %s 中出现 %d 处，不唯一。请提供更长上下文或设置 replace_all。" % (path, count)}
+            new_body = body.replace(old_string, new_string, -1 if replace_all else 1)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(new_body)
+        return {"ok": True, "action": "project_edit", "path": path,
+                "replaced": count if replace_all else 1, "chars": len(new_body)}
+
+    def delete(self, params):
+        cid = params.get("cid") or ""
+        path = self._clean_path(params.get("path") or params.get("filename") or "")
+        with self.lock:
+            d = self._dir(cid)
+            full = os.path.abspath(os.path.join(d, path))
+            if not full.startswith(os.path.abspath(d) + os.sep) or not os.path.isfile(full):
+                return {"ok": False, "error": "文件不存在：%s" % path}
+            try:
+                os.unlink(full)
+            except Exception as e:
+                return {"ok": False, "error": str(e)[:200]}
+        return {"ok": True, "action": "project_delete", "path": path}
+
+    def read_all(self, params):
+        cid = params.get("cid") or ""
+        try:
+            cap = int(params.get("max_chars") or 400000)
+        except Exception:
+            cap = 400000
+        cap = max(1000, min(cap, 400000))
+        with self.lock:
+            d = self._dir(cid)
+            parts = []
+            total = 0
+            used = 0
+            truncated = False
+            for root, _dirs, names in os.walk(d):
+                for name in sorted(names):
+                    full = os.path.join(root, name)
+                    rel = os.path.relpath(full, d).replace("\\", "/")
+                    try:
+                        body = open(full, encoding="utf-8", errors="replace").read()
+                    except Exception:
+                        continue
+                    header = "===== %s（%d 行 / %d 字符）=====\n" % (
+                        rel, len(body.splitlines()), len(body))
+                    piece = header + body
+                    if total + len(piece) + 2 > cap:
+                        parts.append(header + body[:max(0, cap - total - len(header) - 80)] +
+                                     "\n…（达到 max_chars 上限，剩余文件未返回）")
+                        truncated = True
+                        break
+                    parts.append(piece)
+                    total += len(piece) + 2
+                    used += 1
+                if truncated:
+                    break
+        text = "\n\n".join(parts) if parts else "（空）"
+        return {"ok": True, "action": "project_read_all", "content": text,
+                "files": used, "chars": len(text), "truncated": truncated}
+
+    def manifest(self, params):
+        cid = params.get("cid") or ""
+        with self.lock:
+            d = self._dir(cid)
+            out = []
+            for root, _dirs, names in os.walk(d):
+                for name in names:
+                    full = os.path.join(root, name)
+                    rel = os.path.relpath(full, d).replace("\\", "/")
+                    try:
+                        body = open(full, encoding="utf-8", errors="replace").read()
+                    except Exception:
+                        body = ""
+                    out.append({"path": rel, "lines": len(body.splitlines()),
+                                "chars": len(body)})
+        return {"ok": True, "action": "project_manifest",
+                "files": sorted(out, key=lambda x: x["path"])}
+
     def run(self, action, params):
         with self.lock:
             try:
                 fn = {
                     "project_init": self.init, "project_write": self.write,
                     "project_read": self.read, "project_list": self.list,
-                    "project_search": self.search,
+                    "project_search": self.search, "project_edit": self.edit,
+                    "project_delete": self.delete, "project_read_all": self.read_all,
+                    "project_manifest": self.manifest,
                 }.get(action)
                 if not fn:
                     return {"ok": False, "error": "不支持的项目文件动作: %s" % action}
@@ -825,6 +930,7 @@ def job_loop(os_name):
     tops = TerminalOps(os_name, max_sessions=16, idle_timeout=14400)
     dops = DesktopOps(os_name)
     pops = ProjectOps()
+    SERVICES["ops"] = {"browser": bops, "terminal": tops, "desktop": dops, "project": pops}
     STATE["sessions"] = 0
     while not STOP.is_set():
         try:
@@ -862,6 +968,19 @@ def job_loop(os_name):
         STATE["busy"] = False
         STATE["job"] = ""
         STATE["done"] += 1
+
+
+def submit_job(action, params, timeout=180):
+    """MCP / HTTP 调用入口：把动作排进串行队列，等结果返回。"""
+    job = {"job_id": uuid.uuid4().hex[:16], "action": action or "",
+           "params": params or {}, "event": threading.Event(), "result": None}
+    try:
+        JOBS.put(job, timeout=10)
+    except queue.Full:
+        return {"ok": False, "error": "工具机繁忙，请稍后重试"}
+    if not job["event"].wait(timeout=timeout):
+        return {"ok": False, "error": "工具机任务超时"}
+    return job.get("result") or {"ok": False, "error": "工具机没有返回结果"}
 
 
 # ---------------------------------------------------------------- HTTP
