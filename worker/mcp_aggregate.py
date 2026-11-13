@@ -216,7 +216,7 @@ class MCPHub:
                     self._native_routes["native_" + t["name"]] = t["name"]
             except Exception as e:
                 _log("native routes failed: %s" % e)
-        self.ready = bool(self.routes)
+        self.ready = bool(self.routes) or bool(self._native_routes)
         return self.ready
 
     def tool_list(self):
