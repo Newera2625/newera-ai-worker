@@ -1,8 +1,9 @@
 name: AI Browser Workers
 
-# 新启年 AI 工具机群：5 台 Linux + 5 台 Windows
-# 由网站管理员面板触发；每台机器通过 SSH -R 把 127.0.0.1:8080
-# 反向映射到香港 VPS 的 25xxx/26xxx 端口，主站再经 SSH -L 调度。
+# 新启年 AI 工具机群：10 台 Linux + 10 台 Windows
+# 每台机器跑一个标准 MCP 服务（浏览器/终端/桌面/文件/验收/打包），
+# 通过 SSH -R 把 127.0.0.1:8080 反向映射到香港 VPS 的 25xxx/26xxx 端口，
+# 主站再经 SSH -L 调度（主站作为 MCP client 调用 /mcp）。
 on:
   workflow_dispatch:
     inputs:
@@ -22,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slot: [1, 2, 3, 4, 5]
+        slot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v4
 
@@ -66,7 +67,7 @@ jobs:
         env:
           AI_WORKER_TOKEN: ${{ secrets.AI_WORKER_TOKEN }}
         run: |
-          python worker/agent.py \
+          python worker/mcp_server.py \
             --os linux \
             --slot ${{ matrix.slot }} \
             --duration-min ${{ github.event.inputs.duration || '330' }} \
@@ -80,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slot: [1, 2, 3, 4, 5]
+        slot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v4
 
@@ -119,4 +120,4 @@ jobs:
         run: |
           $dur = "${{ github.event.inputs.duration }}"
           if (-not $dur) { $dur = "330" }
-          python worker/agent.py --os windows --slot ${{ matrix.slot }} --duration-min $dur --key "$env:USERPROFILE\.ssh\ai_worker_tunnel" --tunnel-host $env:TUNNEL_HOST --tunnel-port $env:TUNNEL_PORT
+          python worker/mcp_server.py --os windows --slot ${{ matrix.slot }} --duration-min $dur --key "$env:USERPROFILE\.ssh\ai_worker_tunnel" --tunnel-host $env:TUNNEL_HOST --tunnel-port $env:TUNNEL_PORT
