@@ -53,6 +53,24 @@ jobs:
             @wonderwhy-er/desktop-commander || true
           node -v && npm -v
 
+      - name: 预置 Desktop Commander 配置（跳过引导页）
+        run: |
+          mkdir -p ~/.claude-server-commander
+          cat > ~/.claude-server-commander/config.json <<'JSON'
+          {
+            "version": 1,
+            "blockedCommands": [],
+            "allowedDirectories": [],
+            "fileReadLineLimit": 2000,
+            "fileWriteLineLimit": 500,
+            "telemetryEnabled": false,
+            "sawOnboardingPage": true,
+            "pendingWelcomeOnboarding": false
+          }
+          JSON
+          echo "DC_FLAG_URL=http://127.0.0.1:9/flags" >> $GITHUB_ENV
+          echo "DESKTOP_COMMANDER_DISABLE_TELEMETRY=1" >> $GITHUB_ENV
+
       - name: 启动虚拟显示器
         run: |
           touch ~/.Xauthority
@@ -126,6 +144,16 @@ jobs:
           $key = "${{ secrets.TUNNEL_SSH_KEY }}"
           [IO.File]::WriteAllText($path, $key + "`n")
           icacls $path /inheritance:r /grant:r "$($env:USERNAME):(R)"
+
+      - name: 预置 Desktop Commander 配置（跳过引导页）
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:USERPROFILE ".claude-server-commander"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $cfg = '{"version":1,"blockedCommands":[],"allowedDirectories":[],"fileReadLineLimit":2000,"fileWriteLineLimit":500,"telemetryEnabled":false,"sawOnboardingPage":true,"pendingWelcomeOnboarding":false}'
+          Set-Content -Path (Join-Path $dir "config.json") -Value $cfg -Encoding ASCII
+          "DC_FLAG_URL=http://127.0.0.1:9/flags" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "DESKTOP_COMMANDER_DISABLE_TELEMETRY=1" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: 运行工具机 Windows #${{ matrix.slot }}
         shell: pwsh
