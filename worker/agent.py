@@ -26,6 +26,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from browser_ops import BrowserOps  # noqa: E402
 from task_sync import TaskSync  # noqa: E402
 from validate_ops import ValidateOps  # noqa: E402
+import mcp_server  # noqa: E402
+import mcp_aggregate  # noqa: E402
+
+# MCP 聚合网关：Playwright MCP + Filesystem MCP + Desktop Commander MCP + 原生工具
+MCP_WORKDIR = os.path.abspath(os.path.join(tempfile.gettempdir(), "newera-projects"))
 
 VERSION = "1.1.0"
 STOP = threading.Event()
@@ -959,7 +964,8 @@ def job_loop(os_name):
             elif action == "validate_preview":
                 out = validate_op.run({"dir": pops.dir_for(params.get("cid") or ""),
                                        "manifest": params.get("manifest") or []})
-            elif action in ("bind_task", "sync_task", "package_zip", "restore_task"):
+            elif action in ("bind_task", "sync_task", "package_zip", "restore_task",
+                            "task_status"):
                 params = dict(params or {})
                 params["dir"] = pops.dir_for(params.get("cid") or "")
                 out = sync_op.run(action, params)
@@ -1014,19 +1020,70 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.split("?")[0] == "/health":
+        path = self.path.split("?")[0]
+        if path == "/health":
             self._send(200, {
                 "ok": True, "version": VERSION, "os": STATE["os"],
                 "slot": STATE["slot"], "worker_id": STATE["worker_id"],
                 "busy": STATE["busy"], "job": STATE["job"],
                 "sessions": STATE["sessions"], "done": STATE["done"],
                 "uptime": int(time.time() - STATE["started"]), "last_error": STATE["last_error"],
+                "mcp": True, "mcp_path": "/mcp",
             })
+        elif path == "/mcp":
+            # MCP over HTTP：GET 只用于探测，实际调用走 POST JSON-RPC
+            self._send(200, {"ok": True, "mcp": True, "protocol": mcp_server.PROTOCOL,
+                             "tools": len(mcp_server.TOOLS),
+                             "transport": "streamable-http"})
         else:
             self._send(404, {"ok": False, "error": "not found"})
 
+    def _mcp_post(self):
+        token = os.environ.get("AI_WORKER_TOKEN", "")
+        got = self.headers.get("X-Worker-Token", "")
+        if not token or not got or not _safe_eq(token, got):
+            self._send(403, {"ok": False, "error": "invalid worker token"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > 32 * 1024 * 1024:
+                raise ValueError("bad length")
+            raw = self.rfile.read(length).decode("utf-8")
+            body = json.loads(raw)
+        except Exception:
+            self._send(400, {"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32700, "message": "Parse error"}})
+            return
+
+        def submit(action, params):
+            return submit_job(action, params, timeout=int(os.environ.get("MCP_JOB_TIMEOUT", "150")))
+
+        def hub():
+            return mcp_aggregate.start(MCP_WORKDIR, submit)
+
+        if isinstance(body, list):
+            replies = []
+            for msg in body[:20]:
+                rep = mcp_aggregate.handle(msg, hub)
+                if rep is not None:
+                    replies.append(rep)
+            if not replies:
+                self._send(202, {"ok": True})
+            else:
+                self._send(200, replies)
+            return
+        rep = mcp_aggregate.handle(body, hub)
+        if rep is None:
+            self._send(202, {"ok": True})
+            return
+        self._send(200, rep)
+
     def do_POST(self):
-        if self.path.split("?")[0] != "/run":
+        path = self.path.split("?")[0]
+        if path == "/mcp":
+            self._mcp_post()
+            return
+        if path != "/run":
             self._send(404, {"ok": False, "error": "not found"})
             return
         token = os.environ.get("AI_WORKER_TOKEN", "")
@@ -1170,6 +1227,12 @@ def main():
         t.start()
     w = threading.Thread(target=job_loop, args=(args.os,), daemon=True)
     w.start()
+    # 先起 MCP 聚合网关（Playwright / Filesystem / Desktop Commander），再对外提供 /mcp
+    try:
+        os.makedirs(MCP_WORKDIR, exist_ok=True)
+        mcp_aggregate.start(MCP_WORKDIR, submit_job)
+    except Exception as e:
+        print("[mcp] hub start failed: %s" % e, flush=True)
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
