@@ -288,7 +288,10 @@ def build_hub(workdir):
     enabled = (os.environ.get("MCP_SERVERS") or "browser,files,system").lower()
     hub = MCPHub()
     env_common = dict(os.environ)
-    env_common.setdefault("HOME", "/root")
+    env_common.setdefault("HOME", os.path.expanduser("~"))
+    # Desktop Commander 首次运行会弹引导页并阻塞 tools/list，这里直接跳过
+    env_common.setdefault("DC_FLAG_URL", "http://127.0.0.1:9/flags")
+    env_common.setdefault("DESKTOP_COMMANDER_DISABLE_TELEMETRY", "1")
     if os.environ.get("DISPLAY"):
         env_common["DISPLAY"] = os.environ["DISPLAY"]
 
