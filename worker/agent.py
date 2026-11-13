@@ -24,6 +24,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from browser_ops import BrowserOps  # noqa: E402
+from task_sync import TaskSync  # noqa: E402
+from validate_ops import ValidateOps  # noqa: E402
 
 VERSION = "1.1.0"
 STOP = threading.Event()
@@ -930,7 +932,10 @@ def job_loop(os_name):
     tops = TerminalOps(os_name, max_sessions=16, idle_timeout=14400)
     dops = DesktopOps(os_name)
     pops = ProjectOps()
-    SERVICES["ops"] = {"browser": bops, "terminal": tops, "desktop": dops, "project": pops}
+    validate_op = ValidateOps()
+    sync_op = TaskSync()
+    SERVICES["ops"] = {"browser": bops, "terminal": tops, "desktop": dops, "project": pops,
+                       "validate": validate_op, "sync": sync_op}
     STATE["sessions"] = 0
     while not STOP.is_set():
         try:
@@ -951,6 +956,13 @@ def job_loop(os_name):
                 out = tops.run(params)
             elif action.startswith("desktop_"):
                 out = dops.run(action, params)
+            elif action == "validate_preview":
+                out = validate_op.run({"dir": pops.dir_for(params.get("cid") or ""),
+                                       "manifest": params.get("manifest") or []})
+            elif action in ("bind_task", "sync_task", "package_zip", "restore_task"):
+                params = dict(params or {})
+                params["dir"] = pops.dir_for(params.get("cid") or "")
+                out = sync_op.run(action, params)
             else:
                 out = bops.run(action, params)
             out["elapsed"] = round(time.time() - started, 2)
