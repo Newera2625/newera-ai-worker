@@ -214,6 +214,81 @@ def _clean_url(url: str) -> str:
     return url
 
 
+_PW = None
+
+
+def shared_playwright():
+    """整个工具机共用一个 Playwright 实例。
+
+    同步 API 在同一线程里不能并存两个实例：第二个 sync_playwright() 会撞上
+    第一个还在跑的 asyncio 循环，报 "Sync API inside the asyncio loop"。
+    """
+    global _PW
+    if _PW is None:
+        from playwright.sync_api import sync_playwright
+        _PW = sync_playwright().start()
+    return _PW
+
+
+_CLICKABLE_JS = r"""([text, exact]) => {
+  const norm = s => (s || "").replace(/\s+/g, " ").trim();
+  const sel = [
+    'button', 'a', '[role=button]', '[role=link]', 'input[type=submit]',
+    'input[type=button]', 'label', 'li', 'span', 'div', 'td', 'th', 'p'
+  ].join(',');
+  const all = Array.from(document.querySelectorAll(sel));
+  const target = norm(text);
+  const hit = el => {
+    const r = el.getBoundingClientRect();
+    return r.width > 1 && r.height > 1 && r.top < innerHeight + 2000 && r.bottom > -2000;
+  };
+  const cands = all.filter(el => {
+    if (!hit(el)) return false;
+    const t = norm(el.innerText || el.value || el.getAttribute('aria-label') || el.title || '');
+    if (!t) return false;
+    return exact ? t === target : (t.includes(target) && t.length <= target.length + 40);
+  });
+  // 取最内层（没有同样匹配的后代）
+  const best = cands.filter(el => !cands.some(o => o !== el && el.contains(o)));
+  best.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+  const el = best[0];
+  if (!el) return null;
+  if (!el.hasAttribute('data-awa')) el.setAttribute('data-awa', '1');
+  return {tag: el.tagName.toLowerCase(), text: norm(el.innerText || el.value || '').slice(0, 80)};
+}"""
+
+
+def _find_clickable(page, selector="", text="", timeout=15000):
+    """返回 (element, 定位方式, 描述)。优先 CSS 选择器，其次按可见文字找最内层可点元素。"""
+    if selector:
+        page.wait_for_selector(selector, state="visible", timeout=timeout)
+        el = page.query_selector(selector)
+        if el is None:
+            return None, "selector", {}
+        desc = {"by": "selector", "selector": selector}
+        try:
+            desc["text"] = (el.inner_text() or "").strip()[:60]
+        except Exception:
+            pass
+        return el, "selector", desc
+    if text:
+        deadline = time.time() + timeout / 1000.0
+        while time.time() < deadline:
+            try:
+                got = page.evaluate(_CLICKABLE_JS, [text, False])
+            except Exception:
+                got = None
+            if got:
+                el = page.query_selector('[data-awa="1"]')
+                if el:
+                    page.evaluate("el => el.removeAttribute('data-awa')", el)
+                    return el, "text", {"by": "text", "text": got.get("text") or text,
+                                        "tag": got.get("tag")}
+            page.wait_for_timeout(400)
+        return None, "text", {}
+    return None, "", {}
+
+
 class BrowserOps:
     def __init__(self, max_sessions=6, idle_timeout=600):
         self._pw = None
@@ -232,8 +307,7 @@ class BrowserOps:
                 self._pw.stop()
             except Exception:
                 pass
-        from playwright.sync_api import sync_playwright
-        self._pw = sync_playwright().start()
+        self._pw = shared_playwright()
 
         env_headless = os.environ.get("BROWSER_HEADLESS", "1").strip().lower()
         headless = env_headless not in ("0", "false", "no", "off")
@@ -328,7 +402,7 @@ class BrowserOps:
         return s
 
     # ---------- snapshot ----------
-    def _snapshot(self, page, full_page=False, with_shot=True):
+    def _snapshot(self, page, full_page=False, with_shot=True, clip=None):
         try:
             page.wait_for_timeout(200)
         except Exception:
@@ -351,7 +425,10 @@ class BrowserOps:
         shot = None
         if with_shot:
             try:
-                png = page.screenshot(full_page=bool(full_page), type="jpeg", quality=SHOT_QUALITY)
+                kw = {"full_page": bool(full_page), "type": "jpeg", "quality": SHOT_QUALITY}
+                if clip:
+                    kw["clip"] = clip
+                png = page.screenshot(**kw)
                 shot = base64.b64encode(png).decode("ascii")
             except Exception:
                 shot = None
@@ -384,26 +461,192 @@ class BrowserOps:
         return {"ok": True, "action": "navigate", "session_id": session_id,
                 "page": data, "screenshot_b64": shot}
 
+    def info(self, params):
+        """查元素位置/文字/尺寸，点击前先核对目标，避免点错。"""
+        s = self._get(params.get("session_id") or "")
+        page = s["page"]
+        selector = (params.get("selector") or "").strip()
+        text = (params.get("text") or "").strip()
+        if selector:
+            page.wait_for_selector(selector, state="visible", timeout=int(params.get("timeout") or 15000))
+            el = page.query_selector(selector)
+            if not el:
+                raise ValueError("元素不存在：%s" % selector)
+            box = el.bounding_box() or {}
+            try:
+                label = (el.inner_text() or "").strip()[:80]
+            except Exception:
+                label = ""
+            return {"ok": True, "action": "info", "session_id": params.get("session_id"),
+                    "element": {"selector": selector, "text": label, "box": box}}
+        if text:
+            el, how, desc = _find_clickable(page, text=text, timeout=int(params.get("timeout") or 15000))
+            if not el:
+                raise ValueError("没找到包含文字的元素：%s" % text)
+            return {"ok": True, "action": "info", "session_id": params.get("session_id"),
+                    "element": dict(desc, box=el.bounding_box() or {})}
+        raise ValueError("需要 selector 或 text")
+
+    def hover(self, params):
+        """把鼠标移到元素上（悬停展开菜单），返回新截图。"""
+        s = self._get(params.get("session_id") or "")
+        page = s["page"]
+        selector = (params.get("selector") or "").strip()
+        text = (params.get("text") or "").strip()
+        el, how, info = _find_clickable(page, selector=selector, text=text,
+                                        timeout=int(params.get("timeout") or 15000))
+        if el is None:
+            raise ValueError("没找到要悬停的元素：%s" % (selector or text))
+        el.hover(timeout=5000)
+        self._after(page, 600)
+        data, shot = self._snapshot(page)
+        return {"ok": True, "action": "hover", "session_id": params.get("session_id"),
+                "hovered": dict(info, how=how), "page": data, "screenshot_b64": shot}
+
+    def drag(self, params):
+        """滑动/拖拽：支持元素到元素、元素到坐标、坐标到坐标；slider、轮播、拖拽排序都用它。"""
+        s = self._get(params.get("session_id") or "")
+        page = s["page"]
+        timeout = int(params.get("timeout") or 15000)
+        steps = max(5, min(int(params.get("steps") or 20), 60))
+
+        def _center(selector="", text=""):
+            el, _, _ = _find_clickable(page, selector=selector, text=text, timeout=timeout)
+            if el is None:
+                raise ValueError("拖动起点/终点元素没找到：%s" % (selector or text))
+            box = el.bounding_box()
+            if not box:
+                raise ValueError("元素没有可拖动的区域")
+            return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+        if params.get("selector") or params.get("text"):
+            x1, y1 = _center((params.get("selector") or "").strip(), (params.get("text") or "").strip())
+        else:
+            x1, y1 = float(params.get("x") or 0), float(params.get("y") or 0)
+        if params.get("to_selector") or params.get("to_text"):
+            x2, y2 = _center((params.get("to_selector") or "").strip(), (params.get("to_text") or "").strip())
+        else:
+            x2 = float(params.get("to_x") if params.get("to_x") is not None else x1 + 260)
+            y2 = float(params.get("to_y") if params.get("to_y") is not None else y1)
+        page.mouse.move(x1, y1)
+        page.mouse.down()
+        for i in range(1, steps + 1):
+            page.mouse.move(x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps)
+            page.wait_for_timeout(12)
+        page.mouse.up()
+        self._after(page, 500)
+        data, shot = self._snapshot(page)
+        return {"ok": True, "action": "drag", "session_id": params.get("session_id"),
+                "from": [round(x1), round(y1)], "to": [round(x2), round(y2)],
+                "page": data, "screenshot_b64": shot}
+
+    def swipe(self, params):
+        return self.drag(params)
+
+    def select(self, params):
+        """下拉框选择：按 value、label 或序号选一项。"""
+        s = self._get(params.get("session_id") or "")
+        page = s["page"]
+        selector = (params.get("selector") or "").strip()
+        if not selector:
+            raise ValueError("select 需要 selector（下拉框的 CSS 选择器）")
+        if params.get("label"):
+            picked = page.select_option(selector, label=str(params["label"]))
+        elif params.get("value"):
+            picked = page.select_option(selector, value=str(params["value"]))
+        elif params.get("index") is not None:
+            picked = page.select_option(selector, index=int(params["index"]))
+        else:
+            raise ValueError("需要 label、value 或 index 之一")
+        self._after(page, 400)
+        data, shot = self._snapshot(page)
+        return {"ok": True, "action": "select", "session_id": params.get("session_id"),
+                "selected": picked, "page": data, "screenshot_b64": shot}
+
+    def wait(self, params):
+        """等页面/元素就绪：等 selector 出现、等文字出现，或纯等待若干秒。"""
+        s = self._get(params.get("session_id") or "")
+        page = s["page"]
+        selector = (params.get("selector") or "").strip()
+        text = (params.get("text") or "").strip()
+        seconds = float(params.get("seconds") or 0)
+        timeout = int(params.get("timeout") or 15000)
+        if selector:
+            page.wait_for_selector(selector, state="visible", timeout=timeout)
+        if text:
+            page.wait_for_function(
+                "t => (document.body && document.body.innerText || '').includes(t)",
+                arg=text, timeout=timeout)
+        if seconds:
+            page.wait_for_timeout(int(seconds * 1000))
+        if not selector and not text and not seconds:
+            page.wait_for_timeout(800)
+        data, shot = self._snapshot(page)
+        return {"ok": True, "action": "wait", "session_id": params.get("session_id"),
+                "page": data, "screenshot_b64": shot}
+
     def screenshot(self, params):
         s = self._get(params.get("session_id") or "")
-        data, shot = self._snapshot(s["page"], full_page=bool(params.get("full_page")))
+        clip = None
+        if isinstance(params.get("crop"), dict):
+            c = params["crop"]
+            clip = {"x": float(c.get("x") or 0), "y": float(c.get("y") or 0),
+                    "width": float(c.get("w") or c.get("width") or 0),
+                    "height": float(c.get("h") or c.get("height") or 0)}
+            if clip["width"] <= 0 or clip["height"] <= 0:
+                clip = None
+        data, shot = self._snapshot(s["page"], full_page=bool(params.get("full_page")), clip=clip)
         return {"ok": True, "action": "screenshot", "session_id": params.get("session_id"),
                 "page": data, "screenshot_b64": shot}
 
     def click(self, params):
+        """稳健点击：选择器 / 可见文字 / 坐标三种定位，自动滚动、命中检测、必要时 JS 点击。"""
         s = self._get(params.get("session_id") or "")
         page = s["page"]
+        timeout = int(params.get("timeout") or 15000)
         selector = (params.get("selector") or "").strip()
-        if selector:
-            page.click(selector, timeout=int(params.get("timeout") or 15000))
+        text = (params.get("text") or params.get("label") or "").strip()
+        info = {}
+
+        if selector or text:
+            el, how, info = _find_clickable(page, selector=selector, text=text, timeout=timeout)
+            if el is None:
+                raise ValueError("没找到要点击的元素：%s" % (selector or text))
+            try:
+                el.scroll_into_view_if_needed(timeout=4000)
+            except Exception:
+                pass
+            try:
+                el.wait_for_element_state("stable", timeout=3000)
+            except Exception:
+                pass
+            clicked = False
+            try:
+                el.click(timeout=5000)
+                clicked = True
+            except Exception as e:
+                # 被浮层遮住/动画未结束：先尝试强制点击，再退到 JS 点击
+                try:
+                    el.click(force=True, timeout=3000)
+                    clicked = True
+                except Exception:
+                    try:
+                        page.evaluate("el => el.click()", el)
+                        clicked = True
+                        how += "+javascript"
+                    except Exception:
+                        raise ValueError("点击失败：%s" % str(e)[:160])
+            info["how"] = how
         elif params.get("x") is not None and params.get("y") is not None:
             page.mouse.click(float(params["x"]), float(params["y"]))
+            info["how"] = "coordinate"
         else:
-            raise ValueError("需要 selector 或 x/y 坐标")
+            raise ValueError("需要 selector、text（可见文字）或 x/y 坐标之一")
+
         self._after(page)
         data, shot = self._snapshot(page)
         return {"ok": True, "action": "click", "session_id": params.get("session_id"),
-                "page": data, "screenshot_b64": shot}
+                "clicked": info, "page": data, "screenshot_b64": shot}
 
     def type(self, params):
         s = self._get(params.get("session_id") or "")
@@ -463,7 +706,8 @@ class BrowserOps:
             try:
                 fn = getattr(self, action, None)
                 if action not in ("navigate", "screenshot", "click", "type", "press",
-                                  "scroll", "back", "close") or fn is None:
+                                  "scroll", "back", "close", "hover", "drag", "swipe",
+                                  "select", "wait", "info") or fn is None:
                     return {"ok": False, "action": action, "error": "不支持的工具动作: %s" % action}
                 out = fn(params)
                 out["sessions"] = len(self._sessions)
