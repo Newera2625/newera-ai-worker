@@ -372,6 +372,8 @@ class TaskSync:
                 return self.sync_once(cid)
             if action == "package_zip":
                 return self.package_zip(cid, proxy=PROXY)
+            if action == "unbind_task":
+                return self.unbind(cid)
             if action == "restore_task":
                 return self.restore(cid, params.get("owner") or "", params.get("repo") or "",
                                     params.get("branch") or "", params.get("prefix") or "",
