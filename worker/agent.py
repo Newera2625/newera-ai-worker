@@ -32,7 +32,7 @@ import mcp_aggregate  # noqa: E402
 # MCP 聚合网关：Playwright MCP + Filesystem MCP + Desktop Commander MCP + 原生工具
 MCP_WORKDIR = os.path.abspath(os.path.join(tempfile.gettempdir(), "newera-projects"))
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 STOP = threading.Event()
 JOBS = queue.Queue(maxsize=8)
 SERVICES = {"ops": None}
@@ -43,17 +43,8 @@ STATE = {
 }
 
 # ---------------------------------------------------------------- terminal
-BLOCK_PATTERNS = [
-    r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(\s|$|\*)",
-    r"\brm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\s+/(\s|$|\*)",
-    r"\bmkfs(\.|\s)", r"\bdd\b[^\n]*of=/dev/(sd|nvme|vd|hd)",
-    r"\bshutdown\b", r"\breboot\b", r"\bpoweroff\b", r":\s*\(\s*\)\s*\{",
-    r"\b(sudo|su)\s", r"ai_worker_tunnel",
-    r"/proc/[^\s]*environ", r"\b(printenv|env)\s*($|\|)",
-    r"AI_WORKER_TOKEN", r"GITHUB_TOKEN", r"ACTIONS_RUNTIME_TOKEN",
-    r"\bchmod\s+-R\s+777\s+/", r"\bchown\s+-R\b[^\n]*\s+/(\s|$)",
-]
-BLOCK_RE = re.compile("|".join("(?:%s)" % p for p in BLOCK_PATTERNS), re.I)
+BLOCK_PATTERNS = []  # 按用户要求：不再拦截任何命令，可执行全部指令
+BLOCK_RE = re.compile("|".join("(?:%s)" % p for p in BLOCK_PATTERNS), re.I) if BLOCK_PATTERNS else None
 SECRET_KEY_RE = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|ACTIONS|GITHUB|SSH|RUNNER_|NPM_TOKEN)", re.I)
 
 
@@ -144,7 +135,7 @@ class TerminalOps:
             return {"ok": False, "error": "command 不能为空"}
         if len(cmd) > 8000:
             return {"ok": False, "error": "命令过长（最多 8000 字符）"}
-        if BLOCK_RE.search(cmd):
+        if BLOCK_RE and BLOCK_RE.search(cmd):
             return {"ok": False, "error": "命令包含被禁止的敏感/危险操作（密钥、SSH、磁盘、关机等）"}
         sid = str(params.get("session_id") or "")
         with self.lock:
