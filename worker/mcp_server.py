@@ -202,6 +202,7 @@ TOOLS = [
              "token": {"type": "string"}}, ["cid", "owner", "repo", "branch"]),
     _schema("sync_task", "立即同步一次任务目录到 GitHub。", {"cid": _CID}, ["cid"]),
     _schema("task_status", "查询任务的 GitHub 同步状态。", {"cid": _CID}, ["cid"]),
+    _schema("unbind_task", "解绑任务并删除工具机本地仓库目录（空闲释放时用）。", {"cid": _CID}, ["cid"]),
     _schema("env_info", "返回工具机系统、架构、磁盘与运行时间等环境信息。", {}, []),
 ]
 
@@ -229,6 +230,8 @@ def _to_action(name, args):
         return "sync_task", args
     if name == "task_status":
         return "task_status", args
+    if name == "unbind_task":
+        return "unbind_task", args
     if name in ("fs_list", "fs_read", "fs_delete", "fs_search", "fs_read_all", "fs_manifest"):
         return {"fs_list": "project_list", "fs_read": "project_read",
                 "fs_delete": "project_delete", "fs_search": "project_search",
