@@ -268,9 +268,18 @@ class TaskSync:
                 item["thread"] = t
             return item
 
-    def unbind(self, cid):
+    def unbind(self, cid, remove_dir=True):
+        """空闲释放时解绑，并把本地仓库目录删掉，保证下次是全新克隆。"""
         with self.lock:
-            self.tasks.pop(cid, None)
+            item = self.tasks.pop(cid, None) or {}
+        if remove_dir:
+            d = item.get("dir") or ""
+            if d and os.path.isdir(d):
+                try:
+                    shutil.rmtree(d, ignore_errors=True)
+                except Exception:
+                    pass
+        return {"ok": True, "unbound": True, "removed": bool(remove_dir)}
 
     def status(self, cid):
         with self.lock:
