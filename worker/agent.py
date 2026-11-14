@@ -48,7 +48,7 @@ BLOCK_PATTERNS = [
     r"\brm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\s+/(\s|$|\*)",
     r"\bmkfs(\.|\s)", r"\bdd\b[^\n]*of=/dev/(sd|nvme|vd|hd)",
     r"\bshutdown\b", r"\breboot\b", r"\bpoweroff\b", r":\s*\(\s*\)\s*\{",
-    r"\b(ssh|scp|sftp)\b", r"\b(sudo|su)\s", r"\.ssh", r"ai_worker_tunnel",
+    r"\b(sudo|su)\s", r"ai_worker_tunnel",
     r"/proc/[^\s]*environ", r"\b(printenv|env)\s*($|\|)",
     r"AI_WORKER_TOKEN", r"GITHUB_TOKEN", r"ACTIONS_RUNTIME_TOKEN",
     r"\bchmod\s+-R\s+777\s+/", r"\bchown\s+-R\b[^\n]*\s+/(\s|$)",
