@@ -32,7 +32,7 @@ import mcp_aggregate  # noqa: E402
 # MCP 聚合网关：Playwright MCP + Filesystem MCP + Desktop Commander MCP + 原生工具
 MCP_WORKDIR = os.path.abspath(os.path.join(tempfile.gettempdir(), "newera-projects"))
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 STOP = threading.Event()
 JOBS = queue.Queue(maxsize=8)
 SERVICES = {"ops": None}
