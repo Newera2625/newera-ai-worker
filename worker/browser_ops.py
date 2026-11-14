@@ -274,8 +274,26 @@ def _box_of(el):
 def _find_clickable(page, selector="", text="", timeout=15000):
     """返回 (element, 定位方式, 描述)。优先 CSS 选择器，其次按可见文字找最内层可点元素。"""
     if selector:
-        page.wait_for_selector(selector, state="visible", timeout=timeout)
-        el = page.query_selector(selector)
+        # 不用 wait_for_selector（遇到个别页面会整段卡满超时），自己轮询，出现即可点
+        deadline = time.time() + max(1.0, timeout / 1000.0)
+        el = None
+        while time.time() < deadline:
+            try:
+                el = page.query_selector(selector)
+            except Exception:
+                el = None
+            if el is not None:
+                try:
+                    if el.is_visible():
+                        break
+                except Exception:
+                    break
+            page.wait_for_timeout(120)
+        if el is None:
+            try:
+                el = page.query_selector(selector)
+            except Exception:
+                el = None
         if el is None:
             return None, "selector", {}
         desc = {"by": "selector", "selector": selector}
