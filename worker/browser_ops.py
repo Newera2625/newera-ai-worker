@@ -472,11 +472,26 @@ class BrowserOps:
         selector = (params.get("selector") or "").strip()
         text = (params.get("text") or "").strip()
         if selector:
-            page.wait_for_selector(selector, state="visible", timeout=int(params.get("timeout") or 15000))
-            el = page.query_selector(selector)
+            # 不用 wait_for_selector（个别页面会整段超时卡住），改成自己轮询
+            deadline = time.time() + max(1.0, int(params.get("timeout") or 15000) / 1000.0)
+            el = None
+            box = None
+            while time.time() < deadline:
+                try:
+                    cand = page.query_selector(selector)
+                except Exception:
+                    cand = None
+                if cand:
+                    try:
+                        b = cand.bounding_box() or {}
+                    except Exception:
+                        b = {}
+                    if b.get("width") and b.get("height"):
+                        el, box = cand, b
+                        break
+                time.sleep(0.2)
             if not el:
-                raise ValueError("元素不存在：%s" % selector)
-            box = el.bounding_box() or {}
+                raise ValueError("元素不存在或不可见：%s" % selector)
             try:
                 label = (el.inner_text() or "").strip()[:80]
             except Exception:
