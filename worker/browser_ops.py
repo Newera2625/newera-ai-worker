@@ -258,6 +258,19 @@ _CLICKABLE_JS = r"""([text, exact]) => {
 }"""
 
 
+def _box_of(el):
+    """用 getBoundingClientRect 取元素框，比 bounding_box 更稳（不返回 None）。"""
+    try:
+        return el.evaluate("""e => { const r = e.getBoundingClientRect();
+            return {x: r.left + window.scrollX, y: r.top + window.scrollY,
+                    width: r.width, height: r.height}; }""")
+    except Exception:
+        try:
+            return el.bounding_box() or {}
+        except Exception:
+            return {}
+
+
 def _find_clickable(page, selector="", text="", timeout=15000):
     """返回 (element, 定位方式, 描述)。优先 CSS 选择器，其次按可见文字找最内层可点元素。"""
     if selector:
@@ -482,10 +495,7 @@ class BrowserOps:
                 except Exception:
                     cand = None
                 if cand:
-                    try:
-                        b = cand.bounding_box() or {}
-                    except Exception:
-                        b = {}
+                    b = _box_of(cand) or {}
                     if b.get("width") and b.get("height"):
                         el, box = cand, b
                         break
@@ -503,7 +513,7 @@ class BrowserOps:
             if not el:
                 raise ValueError("没找到包含文字的元素：%s" % text)
             return {"ok": True, "action": "info", "session_id": params.get("session_id"),
-                    "element": dict(desc, box=el.bounding_box() or {})}
+                    "element": dict(desc, box=_box_of(el))}
         raise ValueError("需要 selector 或 text")
 
     def hover(self, params):
@@ -533,7 +543,7 @@ class BrowserOps:
             el, _, _ = _find_clickable(page, selector=selector, text=text, timeout=timeout)
             if el is None:
                 raise ValueError("拖动起点/终点元素没找到：%s" % (selector or text))
-            box = el.bounding_box()
+            box = _box_of(el)
             if not box:
                 raise ValueError("元素没有可拖动的区域")
             return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
