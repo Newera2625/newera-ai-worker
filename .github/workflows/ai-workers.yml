@@ -1,8 +1,8 @@
 name: AI Browser Workers
 
-# 新启年 AI 工具机群：10 台 Linux + 10 台 Windows
+# 新启年 AI 工具机群：20 台 Linux（Windows 已下线）
 # 每台机器跑自研工具服务（浏览器/终端/桌面/文件/页面验收/打包），
-# 通过 SSH -R 把 127.0.0.1:8080 反向映射到香港 VPS 的 25xxx/26xxx 端口，
+# 通过 SSH -R 把 127.0.0.1:8080 反向映射到香港 VPS 的 25001-25020 端口，
 # 主站再经 SSH -L 调度。
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        slot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - uses: actions/checkout@v4
 
@@ -78,52 +78,3 @@ jobs:
             --key ~/.ssh/ai_worker_tunnel \
             --tunnel-host "${{ secrets.TUNNEL_HOST }}" \
             --tunnel-port "${{ secrets.TUNNEL_PORT }}"
-
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        slot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: 安装 Playwright 与 Chromium
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r worker/requirements.txt
-          python -m playwright install chromium
-
-      - name: 安装 Tesseract OCR
-        run: |
-          choco install tesseract -y
-          echo "C:\Program Files\Tesseract-OCR" >> $env:GITHUB_PATH
-
-      - name: 写入隧道密钥
-        shell: pwsh
-        run: |
-          $dir = Join-Path $env:USERPROFILE ".ssh"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $path = Join-Path $dir "ai_worker_tunnel"
-          $key = "${{ secrets.TUNNEL_SSH_KEY }}"
-          [IO.File]::WriteAllText($path, $key + "`n")
-          icacls $path /inheritance:r /grant:r "$($env:USERNAME):(R)"
-
-      - name: 运行工具机 Windows #${{ matrix.slot }}
-        shell: pwsh
-        env:
-          AI_WORKER_TOKEN: ${{ secrets.AI_WORKER_TOKEN }}
-          TUNNEL_HOST: ${{ secrets.TUNNEL_HOST }}
-          TUNNEL_PORT: ${{ secrets.TUNNEL_PORT }}
-          BROWSER_HEADLESS: "0"
-          MCP_SERVERS: none
-          MCP_JOB_TIMEOUT: "150"
-        run: |
-          $dur = "${{ github.event.inputs.duration }}"
-          if (-not $dur) { $dur = "330" }
-          python worker/agent.py --os windows --slot ${{ matrix.slot }} --duration-min $dur --key "$env:USERPROFILE\.ssh\ai_worker_tunnel" --tunnel-host $env:TUNNEL_HOST --tunnel-port $env:TUNNEL_PORT
