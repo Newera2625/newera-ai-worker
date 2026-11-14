@@ -11,6 +11,10 @@ on:
         description: "运行时长（分钟，建议 330，最大 350）"
         required: false
         default: "330"
+      slots:
+        description: "只启动指定槽位（逗号分隔，留空=全部 1-20）"
+        required: false
+        default: ""
 
 concurrency:
   group: ai-workers
@@ -23,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        slot: ${{ fromJSON(inputs.slots != '' && format('[{0}]', inputs.slots) || '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]') }}
     steps:
       - uses: actions/checkout@v4
 
