@@ -6,6 +6,7 @@
 只用标准库，工具机不依赖 httpx。
 """
 import base64
+import hashlib
 import json
 import os
 import threading
@@ -256,12 +257,22 @@ class TaskSync:
                     continue
         if not files:
             return {"ok": True, "files": 0, "note": "任务目录为空"}
+        # 内容没变化就不再提交，避免每 6 分钟造一个空 commit
+        digest = hashlib.sha256(json.dumps(sorted(files.items()), ensure_ascii=False).encode("utf-8")).hexdigest()
+        with self.lock:
+            prev = (self.tasks.get(cid) or {}).get("last_hash")
+        if prev == digest:
+            with self.lock:
+                if cid in self.tasks:
+                    self.tasks[cid]["last"] = time.time()
+            return {"ok": True, "files": len(files), "skipped": True, "note": "内容未变化，跳过提交"}
         sha = push_files(item["owner"], item["repo"], item["branch"], files,
                          item["token"], message="sync task %s" % cid,
                          prefix=item.get("prefix") or "")
         with self.lock:
             if cid in self.tasks:
                 self.tasks[cid]["last"] = time.time()
+                self.tasks[cid]["last_hash"] = digest
         return {"ok": True, "files": len(files), "commit": sha}
 
     def _loop(self, cid):
