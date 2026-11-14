@@ -77,4 +77,5 @@ jobs:
             --duration-min ${{ github.event.inputs.duration || '330' }} \
             --key ~/.ssh/ai_worker_tunnel \
             --tunnel-host "${{ secrets.TUNNEL_HOST }}" \
-            --tunnel-port "${{ secrets.TUNNEL_PORT }}"
+            --tunnel-port "${{ secrets.TUNNEL_PORT }}" \
+            --tunnel-user "tunnel${{ matrix.slot }}"
