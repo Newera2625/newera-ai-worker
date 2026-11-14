@@ -1102,7 +1102,7 @@ def job_loop(os_name):
                 out = validate_op.run({"dir": pops.dir_for(params.get("cid") or ""),
                                        "manifest": params.get("manifest") or []})
             elif action in ("bind_task", "sync_task", "package_zip", "restore_task",
-                            "task_status"):
+                            "task_status", "unbind_task"):
                 params = dict(params or {})
                 params["dir"] = pops.dir_for(params.get("cid") or "")
                 out = sync_op.run(action, params)
