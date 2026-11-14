@@ -17,8 +17,8 @@ on:
         default: ""
 
 concurrency:
-  group: ai-workers
-  cancel-in-progress: true
+  group: ai-workers-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   linux:
