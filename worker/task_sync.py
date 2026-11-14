@@ -9,6 +9,8 @@ import base64
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
 import urllib.error
@@ -16,7 +18,23 @@ import urllib.request
 import zipfile
 
 API = "https://api.github.com"
-SYNC_INTERVAL = 360  # 6 分钟
+SYNC_INTERVAL = 360  # 已取消定时同步，仅保留常量
+
+def _git(args, cwd, timeout=180, env=None):
+    e = dict(os.environ)
+    e.update({"GIT_TERMINAL_PROMPT": "0"})
+    if env:
+        e.update(env)
+    p = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True,
+                       timeout=timeout, env=e)
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
+
+
+def _auth_url(owner, repo, token):
+    return "https://x-access-token:%s@github.com/%s/%s.git" % (token, owner, repo)
+
+
+
 PROXY = os.environ.get("GITHUB_PROXY", "https://gh-proxy.com/").rstrip("/") + "/"
 
 
@@ -216,6 +234,29 @@ class TaskSync:
         self.tasks = {}   # cid -> {owner, repo, branch, prefix, token, dir, thread, last}
 
     def bind(self, cid, owner, repo, branch, prefix, token, src_dir):
+        # 把仓库真实克隆到工具机本地磁盘，AI 直接在这个目录里读写
+        try:
+            if token and owner and repo:
+                url = _auth_url(owner, repo, token)
+                d = src_dir
+                if os.path.isdir(d) and os.listdir(d):
+                    if not os.path.isdir(os.path.join(d, ".git")):
+                        shutil.rmtree(d, ignore_errors=True)
+                os.makedirs(d, exist_ok=True)
+                rc, out = _git(["rev-parse", "--is-inside-work-tree"], d) if os.path.isdir(os.path.join(d, ".git")) else (1, "")
+                if rc != 0:
+                    rc, out = _git(["clone", "--depth", "1", url, d], cwd=os.path.dirname(d) or "/tmp")
+                    if rc != 0:
+                        _git(["clone", "--depth", "1", "--no-single-branch", url, d], cwd=os.path.dirname(d) or "/tmp")
+                    _git(["checkout", branch], d)
+                    if _git(["rev-parse", "--verify", branch], d)[0] != 0:
+                        _git(["checkout", "-b", branch], d)
+                _git(["remote", "set-url", "origin", url], d)
+                _git(["config", "user.email", "ai-worker@newera2625.top"], d)
+                _git(["config", "user.name", "NewEra AI Worker"], d)
+                self.git_info = {"cid": cid, "dir": d, "branch": branch}
+        except Exception as e:
+            print("[git] clone failed: %s" % str(e)[:200], flush=True)
         with self.lock:
             item = self.tasks.get(cid) or {}
             item.update({"owner": owner, "repo": repo, "branch": branch,
@@ -257,6 +298,26 @@ class TaskSync:
                     continue
         if not files:
             return {"ok": True, "files": 0, "note": "任务目录为空"}
+        # 优先用 git 提交推送（仓库已经在本地目录里）
+        d = item.get("dir") or ""
+        if d and os.path.isdir(os.path.join(d, ".git")):
+            try:
+                _git(["add", "-A"], d)
+                rc, out = _git(["diff", "--cached", "--quiet"], d)
+                if rc == 0:
+                    return {"ok": True, "files": len(files), "skipped": True, "note": "无改动"}
+                msg = "sync task %s" % cid
+                _git(["commit", "-m", msg], d)
+                rc, out = _git(["push", "--force", "origin", item.get("branch") or "main"], d)
+                if rc != 0:
+                    raise RuntimeError(out[:300])
+                with self.lock:
+                    if cid in self.tasks:
+                        self.tasks[cid]["last"] = time.time()
+                return {"ok": True, "files": len(files), "commit": out[-80:]}
+            except Exception as e:
+                print("[git] push failed: %s" % str(e)[:200], flush=True)
+
         # 内容没变化就不再提交，避免每 6 分钟造一个空 commit
         digest = hashlib.sha256(json.dumps(sorted(files.items()), ensure_ascii=False).encode("utf-8")).hexdigest()
         with self.lock:
@@ -340,9 +401,25 @@ class TaskSync:
         except Exception as e:
             return {"ok": False, "error": "打包失败：%s" % str(e)[:200]}
         path = "packages/%s.zip" % cid
+        # zip 放进仓库目录一起提交（GitHub 上同一分支可见）
         try:
-            url = push_bytes(item["owner"], item["repo"], item["branch"], path, data,
-                             item["token"], message="package task %s" % cid)
+            zdir = os.path.join(item["dir"], "packages")
+            os.makedirs(zdir, exist_ok=True)
+            shutil.copy2(out, os.path.join(zdir, "%s.zip" % cid))
+            if os.path.isdir(os.path.join(item["dir"], ".git")):
+                _git(["add", "-A"], item["dir"])
+                rc, _ = _git(["diff", "--cached", "--quiet"], item["dir"])
+                if rc != 0:
+                    _git(["commit", "-m", "package task %s" % cid], item["dir"])
+                    prc, pout = _git(["push", "--force", "origin", item.get("branch") or "main"], item["dir"])
+                    if prc != 0:
+                        raise RuntimeError(pout[:200])
+                url = "https://raw.githubusercontent.com/%s/%s/%s" % (
+                    item["owner"], item["repo"], item.get("branch") or "main")
+                url = url + "/" + path
+            else:
+                url = push_bytes(item["owner"], item["repo"], item["branch"], path, data,
+                                 item["token"], message="package task %s" % cid)
         except Exception as e:
             return {"ok": False, "error": str(e)[:300]}
         if proxy:
