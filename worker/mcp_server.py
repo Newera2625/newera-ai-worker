@@ -61,6 +61,7 @@ _ACTION = {
     "bind_task": "bind_task",
     "sync_task": "sync_task",
     "task_status": "task_status",
+    "unbind_task": "unbind_task",
     "env_info": "env_info",
 }
 
