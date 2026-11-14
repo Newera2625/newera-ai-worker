@@ -32,7 +32,7 @@ import mcp_aggregate  # noqa: E402
 # MCP 聚合网关：Playwright MCP + Filesystem MCP + Desktop Commander MCP + 原生工具
 MCP_WORKDIR = os.path.abspath(os.path.join(tempfile.gettempdir(), "newera-projects"))
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 STOP = threading.Event()
 JOBS = queue.Queue(maxsize=8)
 SERVICES = {"ops": None}
@@ -1338,7 +1338,10 @@ def main():
         print("ERROR: AI_WORKER_TOKEN is empty", flush=True)
         sys.exit(2)
     if args.remote_port <= 0:
-        args.remote_port = (25000 if args.os == "linux" else 26000) + args.slot
+        if args.os == "linux":
+            args.remote_port = (25000 + args.slot) if args.slot <= 10 else (35000 + args.slot - 10)
+        else:
+            args.remote_port = 26000 + args.slot
     if not args.no_tunnel and (not args.tunnel_host or not args.tunnel_port):
         print("ERROR: tunnel host/port missing (set TUNNEL_HOST / TUNNEL_PORT)", flush=True)
         sys.exit(2)
